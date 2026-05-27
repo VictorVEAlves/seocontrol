@@ -1,0 +1,27 @@
+.env
+.env.local
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+node_modules/
+
+reports/*.html
+reports/*.json
+pending_changes.json
+geo_results.json
+blog_briefs.json
+blog_ideas.json
+_gemini_test_out.txt
+
+.site_config.json
+.last_full_audit.json
+.dashboard_cache_*.json
+.dashboard_ai_*.json
+
+gsc_exports/*.csv
+
+# Google OAuth credentials — never commit
+gsc_credentials.json
+.gsc_token.json
