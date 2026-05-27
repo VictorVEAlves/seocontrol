@@ -10,6 +10,19 @@ DESC_MIN = 100
 DESC_MAX = 165
 
 
+def _is_tracking_pixel(img) -> bool:
+    """Exclude invisible fallback pixels that are not page content images."""
+    src = str(img.get("src", "")).lower()
+    style = str(img.get("style", "")).replace(" ", "").lower()
+    width = str(img.get("width", "")).strip().lower().removesuffix("px")
+    height = str(img.get("height", "")).strip().lower().removesuffix("px")
+    in_noscript = img.find_parent("noscript") is not None
+    is_pixel = width == "1" and height == "1"
+    is_hidden = "display:none" in style or str(img.get("aria-hidden", "")).lower() == "true"
+    is_known_tracker = any(domain in src for domain in ("facebook.com/tr", "ct.pinterest.com/v3/"))
+    return is_pixel and (is_hidden or in_noscript or is_known_tracker)
+
+
 def audit_page(url: str) -> dict:
     status, soup, headers, final_url = get_page(url)
 
@@ -28,6 +41,8 @@ def audit_page(url: str) -> dict:
         "h2_texts": [],
         "images_total": 0,
         "images_no_alt": 0,
+        "images_ignored_tracking": 0,
+        "images_no_alt_examples": [],
         "canonical": "",
         "schemas": [],
         "has_faq_schema": False,
@@ -102,9 +117,12 @@ def audit_page(url: str) -> dict:
 
     # --- Images without alt ---
     images = soup.find_all("img")
-    no_alt = [img.get("src", "")[:80] for img in images if not img.get("alt", "").strip()]
+    content_images = [img for img in images if not _is_tracking_pixel(img)]
+    no_alt = [img.get("src", "")[:120] for img in content_images if not img.get("alt", "").strip()]
     result["images_total"] = len(images)
+    result["images_ignored_tracking"] = len(images) - len(content_images)
     result["images_no_alt"] = len(no_alt)
+    result["images_no_alt_examples"] = no_alt[:5]
 
     if no_alt:
         sev = "issues" if len(no_alt) > 5 else "warnings"

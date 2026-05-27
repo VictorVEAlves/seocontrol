@@ -3618,6 +3618,7 @@ def full_audit_report(job_id):
     highs = sum(1 for p in onpage if isinstance(p, dict) and p.get("grade", "A") in ("D", "F"))
     total_warnings = sum(len(_scoreable_onpage_warnings(p)) for p in onpage if isinstance(p, dict))
     total_issues = sum(len(p.get("issues", [])) for p in onpage if isinstance(p, dict))
+    total_findings = total_issues + total_warnings
     drops = gsc_api.get("drops", [])
     qw    = gsc.get("quick_wins", [])
     bm    = gsc.get("benchmarks", {})
@@ -3638,7 +3639,7 @@ def full_audit_report(job_id):
          background:{hbg};color:{hc};margin-bottom:8px">{hlabel}</div>
     <div style="font-size:22px;font-weight:800;margin-bottom:6px;color:var(--ink)">Score de Saúde SEO</div>
     <div style="color:var(--muted);font-size:13px;margin-bottom:6px">{hdesc}</div>
-    <div style="color:var(--muted);font-size:12px;margin-bottom:16px">Nota baseada em checks on-page. Quedas de tr&aacute;fego aparecem para monitoramento, mas n&atilde;o alteram o score.</div>
+    <div style="color:var(--muted);font-size:12px;margin-bottom:16px">Nota baseada em checks on-page de {len(onpage)} URLs priorit&aacute;rias. Quedas de tr&aacute;fego aparecem para monitoramento, mas n&atilde;o alteram o score.</div>
     <div style="display:flex;gap:24px;flex-wrap:wrap">
       <div style="text-align:center">
         <div style="font-size:24px;font-weight:800;color:{'var(--bad)' if highs>5 else 'var(--warn)' if highs>0 else 'var(--ok)'}">{highs}</div>
@@ -3673,12 +3674,12 @@ def full_audit_report(job_id):
 
     metrics_html = f"""<div class="metric-grid">
   {mcard(f"{total_q:,}", 'Queries monitoradas', 'info')}
-  {mcard(f"{total_p:,}", 'Páginas indexadas')}
+  {mcard(f"{total_p:,}", 'Páginas observadas no GSC')}
   {mcard(f"{avg_pos:.1f}", 'Posição média', 'ok' if avg_pos < 6 else 'warn' if avg_pos < 10 else 'bad')}
   {mcard(f"{avg_ctr:.2f}%", 'CTR médio', 'ok' if avg_ctr >= 1.2 else 'warn' if avg_ctr >= 0.8 else 'bad')}
   {mcard(len(drops), 'Quedas monitoradas', 'info')}
   {mcard(len(qw), 'Quick wins', 'ok' if qw else 'warn')}
-  {mcard(total_issues, 'Problemas on-page', 'bad' if highs > 5 else 'warn' if highs > 0 else 'ok')}
+  {mcard(total_findings, f'Achados on-page ({len(onpage)} URLs)', 'bad' if total_issues else 'warn' if total_warnings else 'ok')}
   {mcard(len(backlog), 'Tarefas no backlog')}
 </div>"""
 
@@ -4040,7 +4041,7 @@ function toggleCatDetail(id) {{
 {metrics_html}
 <div class="rtab-bar">
   <button class="rtab active" id="tab-btn-overview"  onclick="showTab('tab-overview')">Visão Geral</button>
-  <button class="rtab"        id="tab-btn-issues"    onclick="showTab('tab-issues')">Problemas ({total_issues})</button>
+  <button class="rtab"        id="tab-btn-issues"    onclick="showTab('tab-issues')">Achados on-page ({total_findings})</button>
   <button class="rtab"        id="tab-btn-keywords"  onclick="showTab('tab-keywords')">Keywords</button>
   <button class="rtab"        id="tab-btn-content"   onclick="showTab('tab-content')">Conteúdo</button>
   <button class="rtab"        id="tab-btn-backlog"   onclick="showTab('tab-backlog')">Backlog ({len(backlog)})</button>

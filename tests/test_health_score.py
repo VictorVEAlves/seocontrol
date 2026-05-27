@@ -1,3 +1,4 @@
+import app as dashboard
 from app import _health_score, _scoreable_onpage_warnings
 
 
@@ -33,3 +34,20 @@ def test_health_score_uses_onpage_findings_and_ignores_legacy_meta_keywords():
     assert _health_score(healthy) == 100
     assert _health_score(with_seo_finding) == 95
     assert _scoreable_onpage_warnings(healthy["onpage"][0]) == []
+
+
+def test_full_audit_report_counts_warnings_as_onpage_findings(monkeypatch):
+    report = {
+        "onpage": [_page(warnings=["HTML muito grande (600 KB)"])],
+        "gsc": {},
+        "gsc_api": {},
+        "content_gap": {},
+        "backlog": [],
+        "ai_analysis": {},
+    }
+    monkeypatch.setattr(dashboard, "_load_last_audit", lambda: report)
+
+    html = dashboard.app.test_client().get("/full-audit/report/last").get_data(as_text=True)
+
+    assert "Achados on-page (1)" in html
+    assert "Achados on-page (1 URLs)" in html
