@@ -3325,6 +3325,93 @@ def _audit_get(job_id: str) -> dict | None:
         return _AUDIT_JOBS.get(job_id)
 
 
+_AUDIT_SCOPE_OPTIONS = OrderedDict([
+    ("priority", {
+        "label": "Rápida - páginas prioritárias",
+        "limit": None,
+        "duration": "3 a 5 minutos",
+    }),
+    ("100", {
+        "label": "100 páginas do site",
+        "limit": 100,
+        "duration": "5 a 8 minutos",
+    }),
+    ("500", {
+        "label": "500 páginas do site",
+        "limit": 500,
+        "duration": "25 a 35 minutos",
+    }),
+    ("1000", {
+        "label": "1.000 páginas do site",
+        "limit": 1000,
+        "duration": "50 a 65 minutos",
+    }),
+    ("2000", {
+        "label": "2.000 páginas do site",
+        "limit": 2000,
+        "duration": "1h40 a 2h10",
+    }),
+])
+
+
+def _audit_scope_config(scope_key: str | None) -> tuple[str, dict]:
+    key = str(scope_key or "priority")
+    if key not in _AUDIT_SCOPE_OPTIONS:
+        key = "priority"
+    return key, dict(_AUDIT_SCOPE_OPTIONS[key])
+
+
+def _select_full_audit_pages(scope_key: str) -> tuple[list[str], dict]:
+    from config import get_priority_pages
+    from modules.crawler import normalize_url
+
+    key, option = _audit_scope_config(scope_key)
+    priority_pages = []
+    seen = set()
+    for page in get_priority_pages():
+        normalized = normalize_url(page, get_site_url())
+        if normalized not in seen:
+            seen.add(normalized)
+            priority_pages.append(normalized)
+
+    if key == "priority" and priority_pages:
+        return priority_pages, {
+            "key": key,
+            "label": f"Rápida - {len(priority_pages)} páginas prioritárias",
+            "requested_pages": len(priority_pages),
+            "duration": option["duration"],
+            "source": "Páginas prioritárias",
+            "sitemap_total": None,
+        }
+
+    from modules.sitemap_robots import fetch_sitemap_urls
+    sitemap = fetch_sitemap_urls()
+    sitemap_pages = sitemap.get("urls", [])
+    limit = option["limit"] or 48
+    selected = priority_pages[:]
+    seen = set(selected)
+    for page in sitemap_pages:
+        normalized = normalize_url(page, get_site_url())
+        if normalized not in seen:
+            seen.add(normalized)
+            selected.append(normalized)
+        if len(selected) >= limit:
+            break
+
+    source = "Páginas prioritárias + sitemap" if priority_pages else "Sitemap"
+    if key == "priority":
+        source = "Sitemap (modo rápido)"
+    return selected[:limit], {
+        "key": key,
+        "label": option["label"],
+        "requested_pages": limit,
+        "duration": option["duration"],
+        "source": source,
+        "sitemap_total": len(sitemap_pages),
+        "sitemap_errors": sitemap.get("errors", []),
+    }
+
+
 def _scoreable_onpage_warnings(page: dict) -> list:
     """Warnings that remain relevant to the on-page SEO health score."""
     return [
@@ -3354,7 +3441,7 @@ def _health_score(results: dict) -> int:
     return round(sum(page_score(page) for page in pages) / len(pages))
 
 
-def _run_full_audit(job_id: str, q: _queue_mod.Queue) -> None:
+def _run_full_audit(job_id: str, q: _queue_mod.Queue, scope_key: str = "priority") -> None:
     def emit(step, label, status, summary="", data=None):
         q.put({"step": step, "label": label, "status": status,
                "summary": summary, "data": data or {}})
@@ -3390,19 +3477,37 @@ def _run_full_audit(job_id: str, q: _queue_mod.Queue) -> None:
         results["gsc_api"] = {}
 
     # ── Step 3: On-page ──────────────────────────────────────────────────────
-    emit("onpage", "Auditoria On-Page", "running", "Analisando páginas prioritárias...")
+    emit("onpage", "Auditoria On-Page", "running", "Preparando cobertura selecionada...")
     try:
-        from run import run_onpage
-        from config import PRIORITY_PAGES
-        pages = list(dict.fromkeys(PRIORITY_PAGES))[:25]
-        onpage_data = run_onpage(pages)
+        from modules import onpage as _onpage
+
+        pages, scope_info = _select_full_audit_pages(scope_key)
+        if not pages:
+            raise RuntimeError("Nenhuma URL encontrada para auditar.")
+        results["_audit_scope"] = scope_info
+        estimate = scope_info["duration"]
+        page_count = len(pages)
+        progress_step = max(1, min(25, page_count // 20 or 1))
+
+        def report_progress(done, total, _url):
+            if done == 1 or done == total or done % progress_step == 0:
+                emit("onpage", "Auditoria On-Page", "running",
+                     f"{done}/{total} URLs analisadas · estimativa total {estimate}")
+
+        emit("onpage", "Auditoria On-Page", "running",
+             f"0/{page_count} URLs · estimativa total {estimate}")
+        onpage_data = _onpage.audit_pages(
+            pages, verbose=False, progress_callback=report_progress
+        )
+        scope_info["audited_pages"] = len(onpage_data)
         results["onpage"] = onpage_data
         highs = sum(1 for p in onpage_data if isinstance(p, dict) and p.get("grade", "A") in ("D", "F"))
-        meds  = sum(len(p.get("issues", [])) + len(p.get("warnings", []))
-                    for p in onpage_data if isinstance(p, dict) and p.get("grade") == "C")
-        total_issues = sum(len(p.get("issues", [])) for p in onpage_data if isinstance(p, dict))
+        total_findings = sum(
+            len(p.get("issues", [])) + len(_scoreable_onpage_warnings(p))
+            for p in onpage_data if isinstance(p, dict)
+        )
         emit("onpage", "Auditoria On-Page", "ok",
-             f"{len(onpage_data)} páginas · {highs} críticos (D/F) · {total_issues} problemas")
+             f"{len(onpage_data)} URLs · {highs} críticos (D/F) · {total_findings} achados")
     except Exception as exc:
         emit("onpage", "Auditoria On-Page", "error", str(exc)[:100])
         results["onpage"] = []
@@ -3463,12 +3568,48 @@ def _run_full_audit(job_id: str, q: _queue_mod.Queue) -> None:
 def full_audit():
     if request.args.get("new") != "1" and _LAST_AUDIT_FILE.exists():
         return redirect("/full-audit/report/last")
+    from config import get_priority_pages
+
+    priority_count = len(list(dict.fromkeys(get_priority_pages())))
+    quick_label = (
+        f"Rápida - {priority_count} páginas prioritárias"
+        if priority_count else "Rápida - até 48 páginas do sitemap"
+    )
+    option_labels = {
+        "priority": quick_label,
+        "100": "100 páginas do site",
+        "500": "500 páginas do site",
+        "1000": "1.000 páginas do site",
+        "2000": "2.000 páginas do site",
+    }
+    options_html = "".join(
+        f'<option value="{key}">{esc(option_labels[key])} ({esc(option["duration"])})</option>'
+        for key, option in _AUDIT_SCOPE_OPTIONS.items()
+    )
+    durations_json = _json_mod.dumps(
+        {key: option["duration"] for key, option in _AUDIT_SCOPE_OPTIONS.items()},
+        ensure_ascii=False,
+    )
     body = """
 <div class="section-head">
   <h1>Auditoria Completa</h1>
   <button class="btn btn-primary" id="start-btn" onclick="startAudit()">Iniciar Auditoria</button>
 </div>
 <p class="muted" style="margin-bottom:24px">Análise completa: GSC, quedas de tráfego, on-page, lacunas de conteúdo, backlog priorizado e análise estratégica com IA.</p>
+
+<div class="panel" id="audit-settings" style="max-width:720px;margin-bottom:24px;padding:20px">
+  <label for="audit-page-scope" style="display:block;font-size:13px;font-weight:700;margin-bottom:8px">
+    Quantidade de páginas da auditoria on-page
+  </label>
+  <select id="audit-page-scope" onchange="updateAuditEstimate()"
+          style="width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:7px;background:var(--panel);font-size:14px;color:var(--ink)">
+    __AUDIT_OPTIONS__
+  </select>
+  <div id="audit-time-note" style="margin-top:14px;padding:12px 14px;border-radius:7px;background:var(--warn-bg);color:var(--ink);font-size:13px"></div>
+  <p class="muted" style="font-size:12px;margin:12px 0 0">
+    Os modos amplos usam o sitemap e incluem primeiro as páginas prioritárias. O tempo real varia com a resposta do site e das APIs; mantenha o sistema em execução durante a análise.
+  </p>
+</div>
 
 <!-- Progress panel -->
 <div id="progress-panel" style="display:none">
@@ -3492,14 +3633,27 @@ var _jobId = null;
 var _stepOrder = ['gsc','drops','onpage','content','backlog','ai'];
 var _stepDone  = 0;
 var _stepData  = {};
+var _auditDurations = __AUDIT_DURATIONS__;
+
+function updateAuditEstimate() {
+  var scope = document.getElementById('audit-page-scope').value;
+  var note = document.getElementById('audit-time-note');
+  note.textContent = 'Tempo estimado: ' + _auditDurations[scope] + '. Auditorias maiores podem continuar rodando mesmo com esta página aberta.';
+}
+updateAuditEstimate();
 
 function startAudit() {
+  var scope = document.getElementById('audit-page-scope').value;
   document.getElementById('start-btn').disabled = true;
   document.getElementById('start-btn').textContent = 'Rodando...';
   document.getElementById('progress-panel').style.display = 'block';
   document.getElementById('steps-list').innerHTML = '';
 
-  fetch('/full-audit/start', {method:'POST'})
+  fetch('/full-audit/start', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({page_scope:scope})
+  })
     .then(r => r.json())
     .then(d => {
       _jobId = d.job_id;
@@ -3549,15 +3703,19 @@ function handleStep(ev) {
   document.getElementById('prog-pct').textContent = pct + '%';
 }
 </script>"""
+    body = body.replace("__AUDIT_OPTIONS__", options_html)
+    body = body.replace("__AUDIT_DURATIONS__", durations_json)
     return page_shell("Auditoria Completa", _AUDIT_CSS + body)
 
 
 @app.route("/full-audit/start", methods=["POST"])
 def full_audit_start():
+    payload = request.get_json(silent=True) or {}
+    scope_key, _scope_info = _audit_scope_config(payload.get("page_scope"))
     job_id = uuid.uuid4().hex
     q = _audit_register(job_id)
-    threading.Thread(target=_run_full_audit, args=(job_id, q), daemon=True).start()
-    return jsonify({"job_id": job_id})
+    threading.Thread(target=_run_full_audit, args=(job_id, q, scope_key), daemon=True).start()
+    return jsonify({"job_id": job_id, "page_scope": scope_key})
 
 
 @app.route("/full-audit/stream/<job_id>")
@@ -3604,6 +3762,13 @@ def full_audit_report(job_id):
     cg           = R.get("content_gap", {})
     backlog      = R.get("backlog", [])
     ai           = R.get("ai_analysis", {})
+    audit_scope  = R.get("_audit_scope", {})
+    scope_source = audit_scope.get("source", "URLs selecionadas")
+    sitemap_total = audit_scope.get("sitemap_total")
+    coverage_text = f"{len(onpage):,} URLs analisadas".replace(",", ".")
+    if isinstance(sitemap_total, int) and sitemap_total > 0:
+        sitemap_text = f"{sitemap_total:,}".replace(",", ".")
+        coverage_text += f" de {sitemap_text} localizadas no sitemap"
 
     # ── Health colour ────────────────────────────────────────────────────────
     hc   = "#16a34a" if health >= 75 else "#d97706" if health >= 50 else "#dc2626"
@@ -3639,7 +3804,7 @@ def full_audit_report(job_id):
          background:{hbg};color:{hc};margin-bottom:8px">{hlabel}</div>
     <div style="font-size:22px;font-weight:800;margin-bottom:6px;color:var(--ink)">Score de Saúde SEO</div>
     <div style="color:var(--muted);font-size:13px;margin-bottom:6px">{hdesc}</div>
-    <div style="color:var(--muted);font-size:12px;margin-bottom:16px">Nota baseada em checks on-page de {len(onpage)} URLs priorit&aacute;rias. Quedas de tr&aacute;fego aparecem para monitoramento, mas n&atilde;o alteram o score.</div>
+    <div style="color:var(--muted);font-size:12px;margin-bottom:16px">Nota baseada em checks on-page de {len(onpage)} URLs analisadas ({esc(scope_source)}). Quedas de tr&aacute;fego aparecem para monitoramento, mas n&atilde;o alteram o score.</div>
     <div style="display:flex;gap:24px;flex-wrap:wrap">
       <div style="text-align:center">
         <div style="font-size:24px;font-weight:800;color:{'var(--bad)' if highs>5 else 'var(--warn)' if highs>0 else 'var(--ok)'}">{highs}</div>
@@ -3675,6 +3840,8 @@ def full_audit_report(job_id):
     metrics_html = f"""<div class="metric-grid">
   {mcard(f"{total_q:,}", 'Queries monitoradas', 'info')}
   {mcard(f"{total_p:,}", 'Páginas observadas no GSC')}
+  {mcard(f"{len(onpage):,}".replace(",", "."), 'URLs auditadas on-page', 'info')}
+  {mcard(f"{sitemap_total:,}".replace(",", "."), 'URLs encontradas no sitemap') if isinstance(sitemap_total, int) and sitemap_total > 0 else ''}
   {mcard(f"{avg_pos:.1f}", 'Posição média', 'ok' if avg_pos < 6 else 'warn' if avg_pos < 10 else 'bad')}
   {mcard(f"{avg_ctr:.2f}%", 'CTR médio', 'ok' if avg_ctr >= 1.2 else 'warn' if avg_ctr >= 0.8 else 'bad')}
   {mcard(len(drops), 'Quedas monitoradas', 'info')}
@@ -4036,6 +4203,10 @@ function toggleCatDetail(id) {{
     {f'<span style="font-size:12px;color:var(--muted);margin-top:2px;display:block">Gerada em {esc(completed_at)}</span>' if completed_at else ''}
   </div>
   <a href="/full-audit?new=1" class="btn btn-primary">+ Nova Auditoria</a>
+</div>
+<div style="font-size:13px;color:var(--muted);margin:-12px 0 18px">
+  Cobertura on-page: <strong style="color:var(--ink)">{esc(coverage_text)}</strong> · Origem: {esc(scope_source)}
+  {f' · Estimativa selecionada: {esc(audit_scope.get("duration", ""))}' if audit_scope.get("duration") else ''}
 </div>
 {health_html}
 {metrics_html}

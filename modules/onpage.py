@@ -23,7 +23,7 @@ def _is_tracking_pixel(img) -> bool:
     return is_pixel and (is_hidden or in_noscript or is_known_tracker)
 
 
-def audit_page(url: str) -> dict:
+def audit_page(url: str, collect_internal_links: bool = False) -> dict:
     status, soup, headers, final_url = get_page(url)
 
     result = {
@@ -198,9 +198,10 @@ def audit_page(url: str) -> dict:
             )
 
     # --- Outgoing internal links (used by audit_pages for orphan check) ---
-    result["outgoing_internal_links"] = [
-        lnk["url"] for lnk in extract_links(soup, url) if lnk["is_internal"]
-    ]
+    if collect_internal_links:
+        result["outgoing_internal_links"] = [
+            lnk["url"] for lnk in extract_links(soup, url) if lnk["is_internal"]
+        ]
 
     # --- Score ---
     score = 100 - (len(result["issues"]) * 20) - (len(result["warnings"]) * 5)
@@ -226,14 +227,20 @@ def _rescore(result: dict) -> None:
     )
 
 
-def audit_pages(urls: list, verbose: bool = True) -> list:
+def audit_pages(urls: list, verbose: bool = True, progress_callback=None,
+                check_internal_links: bool = False) -> list:
     full_urls = [u if u.startswith("http") else _get_site_url() + u for u in urls]
     try:
         from rich.progress import track as _track
         _iter = _track(full_urls, description="Auditando páginas...") if verbose else full_urls
     except ImportError:
         _iter = full_urls
-    results = [audit_page(url) for url in _iter]
+    results = []
+    total = len(full_urls)
+    for index, url in enumerate(_iter, start=1):
+        results.append(audit_page(url, collect_internal_links=check_internal_links))
+        if progress_callback:
+            progress_callback(index, total, url)
 
     # ── Cross-page: duplicate meta titles ────────────────────────────────────
     title_map: dict = {}
@@ -265,19 +272,21 @@ def audit_pages(urls: list, verbose: bool = True) -> list:
                 f"Meta description duplicada em {len(others)} outra(s) página(s): {others[0]}"
             )
 
-    # ── Cross-page: orphan pages (< 2 links internos recebidos) ─────────────
-    incoming: dict = {}
-    audited_urls = {r["url"] for r in results}
-    for r in results:
-        for link in r.get("outgoing_internal_links", []):
-            if link in audited_urls:
-                incoming[link] = incoming.get(link, 0) + 1
-    for r in results:
-        count = incoming.get(r["url"], 0)
-        if count < 2:
-            r["warnings"].append(
-                f"Página com apenas {count} link(s) interno(s) recebido(s) — risco de página órfã"
-            )
+    # A sample cannot identify orphan pages: links from pages outside the
+    # selected coverage would be invisible. Enable this only for full crawls.
+    if check_internal_links:
+        incoming: dict = {}
+        audited_urls = {r["url"] for r in results}
+        for r in results:
+            for link in r.get("outgoing_internal_links", []):
+                if link in audited_urls:
+                    incoming[link] = incoming.get(link, 0) + 1
+        for r in results:
+            count = incoming.get(r["url"], 0)
+            if count < 2:
+                r["warnings"].append(
+                    f"Página com apenas {count} link(s) interno(s) recebido(s) — risco de página órfã"
+                )
 
     # ── Recalculate scores after cross-page additions ────────────────────────
     for r in results:

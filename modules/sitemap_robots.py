@@ -4,7 +4,7 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 
-from config import PRIORITY_PAGES, REQUEST_TIMEOUT, SITE_URL, USER_AGENT
+from config import PRIORITY_PAGES, REQUEST_TIMEOUT, USER_AGENT, get_site_url
 from modules.crawler import get_page, normalize_url
 
 
@@ -12,7 +12,7 @@ HEADERS = {"User-Agent": USER_AGENT}
 
 
 def fetch_robots() -> dict:
-    url = urljoin(SITE_URL, "/robots.txt")
+    url = urljoin(get_site_url(), "/robots.txt")
     try:
         resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
         text = resp.text if resp.ok else ""
@@ -39,7 +39,7 @@ def _parse_sitemap_xml(xml_text: str) -> tuple[list, list]:
 
 def fetch_sitemap_urls(sitemap_urls: list | None = None, max_sitemaps: int = 20) -> dict:
     robots = fetch_robots()
-    queue = list(sitemap_urls or robots.get("sitemaps") or [urljoin(SITE_URL, "/sitemap.xml")])
+    queue = list(sitemap_urls or robots.get("sitemaps") or [urljoin(get_site_url(), "/sitemap.xml")])
     seen = set()
     urls = set()
     errors = []
@@ -81,9 +81,10 @@ def analyze(crawl_data: dict | None = None, priority_pages: list | None = None) 
     missing_priority = []
     blocked_priority = []
     canonical_issues = []
+    site_url = get_site_url()
 
     for page in priority:
-        full = normalize_url(page, SITE_URL)
+        full = normalize_url(page, site_url)
         path = urlparse(full).path
         if full not in sitemap_urls:
             missing_priority.append(page)
@@ -99,9 +100,9 @@ def analyze(crawl_data: dict | None = None, priority_pages: list | None = None) 
         canonical_url = normalize_url(canonical.get("href"), url) if canonical and canonical.get("href") else ""
         if canonical_url and canonical_url != normalize_url(final_url):
             canonical_issues.append({
-                "url": url.replace(SITE_URL, ""),
-                "canonical": canonical_url.replace(SITE_URL, ""),
-                "final_url": normalize_url(final_url).replace(SITE_URL, ""),
+                "url": url.replace(site_url, ""),
+                "canonical": canonical_url.replace(site_url, ""),
+                "final_url": normalize_url(final_url).replace(site_url, ""),
             })
 
     issues = []

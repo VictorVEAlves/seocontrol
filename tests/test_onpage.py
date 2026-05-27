@@ -67,3 +67,38 @@ def test_onpage_ignores_tracking_pixels_but_flags_content_image_without_alt(monk
     assert result["images_no_alt"] == 1
     assert result["images_no_alt_examples"] == ["/produto-lacoste.jpg"]
     assert "1 imagens sem alt text" in result["warnings"]
+
+
+def test_audit_pages_reports_progress_without_orphan_inference(monkeypatch):
+    def fake_audit_page(url, collect_internal_links=False):
+        return {
+            "url": url,
+            "meta_title": url,
+            "meta_description": url,
+            "issues": [],
+            "warnings": [],
+            "score": 100,
+            "grade": "A",
+            "outgoing_internal_links": ["https://www.secretoutlet.com.br/b"]
+            if collect_internal_links else [],
+        }
+
+    monkeypatch.setattr("modules.onpage.audit_page", fake_audit_page)
+    updates = []
+
+    results = onpage.audit_pages(
+        ["/a", "/b"],
+        verbose=False,
+        progress_callback=lambda done, total, url: updates.append((done, total, url)),
+    )
+
+    assert updates == [
+        (1, 2, "https://www.secretoutlet.com.br/a"),
+        (2, 2, "https://www.secretoutlet.com.br/b"),
+    ]
+    assert all(result["outgoing_internal_links"] == [] for result in results)
+    assert all(
+        "órfã" not in warning
+        for result in results
+        for warning in result["warnings"]
+    )
