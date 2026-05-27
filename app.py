@@ -3325,60 +3325,33 @@ def _audit_get(job_id: str) -> dict | None:
         return _AUDIT_JOBS.get(job_id)
 
 
+def _scoreable_onpage_warnings(page: dict) -> list:
+    """Warnings that remain relevant to the on-page SEO health score."""
+    return [
+        warning for warning in page.get("warnings", [])
+        if "meta keywords" not in str(warning).casefold()
+    ]
+
+
 def _health_score(results: dict) -> int:
     """
-    Balanced score (5-100).
-    Base 40 + positive GSC signals (up to +47) - technical/drop penalties (up to -43).
-    A large active site with real issues should land 35-55; excellent = 80+.
+    Score from verified on-page SEO checks only.
+
+    Traffic, clicks, ranking movement and detected drops remain useful monitoring
+    context, but are not proof of an SEO problem and must not change this score.
+    Legacy saved reports may still contain the deprecated meta keywords warning;
+    it is filtered here so historical reports use the current scoring rule.
     """
-    score   = 40
-    gsc     = results.get("gsc", {})
-    gsc_api = results.get("gsc_api", {})
+    pages = [p for p in results.get("onpage", []) if isinstance(p, dict)]
+    if not pages:
+        return 0
 
-    # ── Positive: traffic scale ───────────────────────────────────────────────
-    top_pages    = gsc.get("top_pages", [])
-    total_clicks = sum(int(p.get("clicks", 0) or 0) for p in top_pages)
-    if   total_clicks >= 15000: score += 20
-    elif total_clicks >= 5000:  score += 12
-    elif total_clicks >= 1000:  score += 6
-    elif total_clicks >= 200:   score += 2
+    def page_score(page: dict) -> int:
+        issues = page.get("issues", [])
+        warnings = _scoreable_onpage_warnings(page)
+        return max(0, min(100, 100 - len(issues) * 20 - len(warnings) * 5))
 
-    # ── Positive: ranking position ────────────────────────────────────────────
-    top_queries = gsc.get("top_queries", [])
-    if top_queries:
-        avg_pos = sum(float(q.get("position", 50) or 50) for q in top_queries) / len(top_queries)
-        if   avg_pos <= 3:  score += 15
-        elif avg_pos <= 7:  score += 10
-        elif avg_pos <= 15: score += 5
-
-    # ── Positive: CTR quality ─────────────────────────────────────────────────
-    if top_pages:
-        tot_imp  = sum(int(p.get("impressions", 0) or 0) for p in top_pages)
-        tot_clk  = sum(int(p.get("clicks",      0) or 0) for p in top_pages)
-        site_ctr = (tot_clk / tot_imp * 100) if tot_imp > 0 else 0
-        if   site_ctr >= 3.0: score += 12
-        elif site_ctr >= 1.5: score += 6
-        elif site_ctr >= 0.5: score += 2
-
-    # ── Negative: on-page health (grade-based, capped) ────────────────────────
-    critical_pages = sum(1 for p in results.get("onpage", [])
-                         if isinstance(p, dict) and p.get("grade") in ("D", "F"))
-    warn_pages     = sum(1 for p in results.get("onpage", [])
-                         if isinstance(p, dict) and p.get("grade") == "C")
-    score -= min(critical_pages * 5 + warn_pages * 2, 18)
-
-    # ── Negative: CTR opportunity loss ────────────────────────────────────────
-    score -= min(len(gsc.get("low_ctr_pages",   [])) // 4, 8)
-
-    # ── Negative: keyword cannibalization ─────────────────────────────────────
-    score -= min(len(gsc.get("cannibalization", [])) // 5, 5)
-
-    # ── Negative: traffic drops (only critical ones) ──────────────────────────
-    drops      = gsc_api.get("drops", [])
-    crit_drops = sum(1 for d in drops if d.get("severity") == "critical")
-    score -= min(crit_drops // 3, 12)
-
-    return max(5, min(100, score))
+    return round(sum(page_score(page) for page in pages) / len(pages))
 
 
 def _run_full_audit(job_id: str, q: _queue_mod.Queue) -> None:
@@ -3623,7 +3596,7 @@ def full_audit_report(job_id):
             return redirect("/full-audit")
         R = job["result"] or {}
 
-    health       = R.get("_health", 0)
+    health       = _health_score(R)
     completed_at = R.get("_completed_at", "")
     gsc          = R.get("gsc", {})
     gsc_api      = R.get("gsc_api", {})
@@ -3643,7 +3616,7 @@ def full_audit_report(job_id):
               else "Problemas sérios detectados — ação urgente necessária")
 
     highs = sum(1 for p in onpage if isinstance(p, dict) and p.get("grade", "A") in ("D", "F"))
-    meds  = sum(1 for p in onpage if isinstance(p, dict) and p.get("grade") == "C")
+    total_warnings = sum(len(_scoreable_onpage_warnings(p)) for p in onpage if isinstance(p, dict))
     total_issues = sum(len(p.get("issues", [])) for p in onpage if isinstance(p, dict))
     drops = gsc_api.get("drops", [])
     qw    = gsc.get("quick_wins", [])
@@ -3664,19 +3637,20 @@ def full_audit_report(job_id):
     <div style="display:inline-block;padding:3px 12px;border-radius:99px;font-size:12px;font-weight:700;
          background:{hbg};color:{hc};margin-bottom:8px">{hlabel}</div>
     <div style="font-size:22px;font-weight:800;margin-bottom:6px;color:var(--ink)">Score de Saúde SEO</div>
-    <div style="color:var(--muted);font-size:13px;margin-bottom:16px">{hdesc}</div>
+    <div style="color:var(--muted);font-size:13px;margin-bottom:6px">{hdesc}</div>
+    <div style="color:var(--muted);font-size:12px;margin-bottom:16px">Nota baseada em checks on-page. Quedas de tr&aacute;fego aparecem para monitoramento, mas n&atilde;o alteram o score.</div>
     <div style="display:flex;gap:24px;flex-wrap:wrap">
       <div style="text-align:center">
         <div style="font-size:24px;font-weight:800;color:{'var(--bad)' if highs>5 else 'var(--warn)' if highs>0 else 'var(--ok)'}">{highs}</div>
         <div style="font-size:11px;color:var(--muted)">Críticos</div>
       </div>
       <div style="text-align:center">
-        <div style="font-size:24px;font-weight:800;color:var(--warn)">{meds}</div>
+        <div style="font-size:24px;font-weight:800;color:var(--warn)">{total_warnings}</div>
         <div style="font-size:11px;color:var(--muted)">Avisos</div>
       </div>
       <div style="text-align:center">
-        <div style="font-size:24px;font-weight:800;color:{'var(--bad)' if len(drops)>3 else 'var(--warn)' if drops else 'var(--ok)'}">{len(drops)}</div>
-        <div style="font-size:11px;color:var(--muted)">Quedas</div>
+        <div style="font-size:24px;font-weight:800;color:var(--info)">{len(drops)}</div>
+        <div style="font-size:11px;color:var(--muted)">Quedas monitoradas</div>
       </div>
       <div style="text-align:center">
         <div style="font-size:24px;font-weight:800;color:var(--ok)">{len(qw)}</div>
@@ -3691,8 +3665,6 @@ def full_audit_report(job_id):
     total_p   = gsc.get("total_pages",   len(gsc.get("top_pages",   [])))
     avg_pos   = bm.get("avg_position", 0)
     avg_ctr   = bm.get("avg_ctr", 0)
-    crit_drops= sum(1 for d in drops if d.get("severity") == "critical")
-
     def mcard(val, lbl, cls="", icon=""):
         return (f'<div class="metric-card {cls}">'
                 f'<div class="val">{val}</div>'
@@ -3704,7 +3676,7 @@ def full_audit_report(job_id):
   {mcard(f"{total_p:,}", 'Páginas indexadas')}
   {mcard(f"{avg_pos:.1f}", 'Posição média', 'ok' if avg_pos < 6 else 'warn' if avg_pos < 10 else 'bad')}
   {mcard(f"{avg_ctr:.2f}%", 'CTR médio', 'ok' if avg_ctr >= 1.2 else 'warn' if avg_ctr >= 0.8 else 'bad')}
-  {mcard(len(drops), 'Quedas detectadas', 'bad' if crit_drops > 0 else 'warn' if drops else 'ok')}
+  {mcard(len(drops), 'Quedas monitoradas', 'info')}
   {mcard(len(qw), 'Quick wins', 'ok' if qw else 'warn')}
   {mcard(total_issues, 'Problemas on-page', 'bad' if highs > 5 else 'warn' if highs > 0 else 'ok')}
   {mcard(len(backlog), 'Tarefas no backlog')}
@@ -3754,7 +3726,7 @@ def full_audit_report(job_id):
                 cat_map[cat] = {"severity": "issue", "pages": [], "grades": []}
             cat_map[cat]["pages"].append(url)
             cat_map[cat]["grades"].append(grade)
-        for warn in page.get("warnings", []):
+        for warn in _scoreable_onpage_warnings(page):
             cat = _categorize_issue(str(warn))
             if cat not in cat_map:
                 cat_map[cat] = {"severity": "warning", "pages": [], "grades": []}

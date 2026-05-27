@@ -32,3 +32,4 @@ def test_onpage_audit_uses_mocked_html_without_network(monkeypatch):
     assert result["h1_count"] == 1
     assert result["has_product_schema"]
     assert "Meta title ausente" not in result["issues"]
+    assert "Meta keywords ausente" not in result["warnings"]

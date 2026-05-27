@@ -139,11 +139,9 @@ def audit_page(url: str) -> dict:
     else:
         result["ok"].append(f"Schema: {', '.join(schemas)}")
 
-    # --- Meta Keywords (Bagy) ---
+    # --- Meta Keywords (Bagy legacy field; collected, not scored) ---
     kw_tag = soup.find("meta", attrs={"name": "keywords"})
     result["meta_keywords"] = kw_tag.get("content", "").strip() if kw_tag else ""
-    if not result["meta_keywords"]:
-        result["warnings"].append("Meta keywords ausente")
 
     # --- Word count ---
     body = soup.find("body")
