@@ -5,7 +5,7 @@ from urllib.parse import urljoin, urlparse
 import requests
 
 from config import REQUEST_TIMEOUT, USER_AGENT, get_priority_pages, get_site_url
-from modules.crawler import get_page, normalize_url
+from modules.crawler import SKIP_EXTENSIONS, get_page, normalize_url
 
 
 HEADERS = {"User-Agent": USER_AGENT}
@@ -24,16 +24,45 @@ def fetch_robots() -> dict:
     return {"url": url, "status": resp.status_code, "text": text, "sitemaps": sitemaps, "disallows": disallows}
 
 
+def _local_name(tag: str) -> str:
+    return str(tag or "").rsplit("}", 1)[-1].lower()
+
+
+def _direct_child_text(node, name: str) -> str:
+    for child in list(node):
+        if _local_name(child.tag) == name:
+            return (child.text or "").strip()
+    return ""
+
+
+def _is_auditable_page_url(url: str) -> bool:
+    site_url = get_site_url()
+    if not site_url or not url:
+        return False
+    normalized = normalize_url(url, site_url)
+    parsed = urlparse(normalized)
+    site = urlparse(site_url)
+    if parsed.netloc.lower() != site.netloc.lower():
+        return False
+    path = parsed.path.lower()
+    if any(path.endswith(ext) for ext in SKIP_EXTENSIONS):
+        return False
+    return True
+
+
 def _parse_sitemap_xml(xml_text: str) -> tuple[list, list]:
     root = ET.fromstring(xml_text)
     urls = []
     indexes = []
-    for loc in root.findall(".//{*}loc"):
-        value = (loc.text or "").strip()
-        if value.endswith(".xml") or "sitemap" in value.lower():
+    for node in list(root):
+        name = _local_name(node.tag)
+        value = _direct_child_text(node, "loc")
+        if not value:
+            continue
+        if name == "sitemap":
             indexes.append(value)
-        else:
-            urls.append(normalize_url(value))
+        elif name == "url" and _is_auditable_page_url(value):
+            urls.append(normalize_url(value, get_site_url()))
     return urls, indexes
 
 

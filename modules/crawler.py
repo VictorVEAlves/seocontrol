@@ -14,8 +14,9 @@ _session.headers.update({
     "Accept-Language": "pt-BR,pt;q=0.9",
 })
 
-SKIP_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp",
-                   ".pdf", ".css", ".js", ".ico", ".woff", ".woff2", ".ttf", ".xml"}
+SKIP_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp", ".avif",
+                   ".bmp", ".pdf", ".css", ".js", ".ico", ".woff", ".woff2",
+                   ".ttf", ".xml", ".mp4", ".webm", ".mov", ".zip"}
 
 
 def get_page(url: str) -> tuple:

@@ -77,6 +77,13 @@ def test_full_audit_screen_exposes_page_scope_and_time_estimates(monkeypatch):
 def test_select_full_audit_pages_prefers_priority_pages_then_sitemap(monkeypatch):
     monkeypatch.setattr(dashboard, "get_site_url", lambda: "https://example.com")
     monkeypatch.setattr(config, "get_priority_pages", lambda: ["/priority", "/priority"])
+    monkeypatch.setattr(config, "get_brand_clusters", lambda: {
+        "brand": {
+            "pillar": "/priority",
+            "pages": ["/priority/subcategory", "/cluster-page"],
+            "blog": ["/blog/cluster-topic"],
+        }
+    })
     sitemap_urls = [f"https://example.com/page-{index}" for index in range(150)]
     monkeypatch.setattr(
         sitemap_robots,
@@ -88,9 +95,14 @@ def test_select_full_audit_pages_prefers_priority_pages_then_sitemap(monkeypatch
 
     assert len(pages) == 100
     assert pages[0] == "https://example.com/priority"
-    assert pages[1] == "https://example.com/page-0"
+    assert pages[1] == "https://example.com/priority/subcategory"
+    assert pages[2] == "https://example.com/cluster-page"
+    assert pages[3] == "https://example.com/blog/cluster-topic"
+    assert pages[4] == "https://example.com/page-0"
     assert scope["requested_pages"] == 100
     assert scope["sitemap_total"] == 150
+    assert scope["priority_pages"] == 1
+    assert scope["cluster_pages"] == 3
 
 
 def test_full_audit_start_passes_selected_scope_to_worker(monkeypatch):

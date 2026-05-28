@@ -3362,7 +3362,7 @@ def _audit_scope_config(scope_key: str | None) -> tuple[str, dict]:
 
 
 def _select_full_audit_pages(scope_key: str) -> tuple[list[str], dict]:
-    from config import get_priority_pages
+    from config import get_brand_clusters, get_priority_pages
     from modules.crawler import normalize_url
 
     site_url = get_site_url()
@@ -3371,28 +3371,45 @@ def _select_full_audit_pages(scope_key: str) -> tuple[list[str], dict]:
 
     key, option = _audit_scope_config(scope_key)
     priority_pages = []
+    configured_pages = []
     seen = set()
-    for page in get_priority_pages():
+    def add_configured_page(page: str) -> None:
         normalized = normalize_url(page, site_url)
         if normalized not in seen:
             seen.add(normalized)
-            priority_pages.append(normalized)
+            configured_pages.append(normalized)
 
-    if key == "priority" and priority_pages:
-        return priority_pages, {
+    for page in get_priority_pages():
+        before = len(configured_pages)
+        add_configured_page(page)
+        if len(configured_pages) > before:
+            priority_pages.append(configured_pages[-1])
+
+    for cluster in get_brand_clusters().values():
+        for page in [cluster.get("pillar"), *cluster.get("pages", []), *cluster.get("blog", [])]:
+            if page:
+                add_configured_page(page)
+
+    cluster_count = max(0, len(configured_pages) - len(priority_pages))
+    configured_label = "Páginas prioritárias + clusters" if cluster_count else "Páginas prioritárias"
+
+    if key == "priority" and configured_pages:
+        return configured_pages, {
             "key": key,
-            "label": f"Rápida - {len(priority_pages)} páginas prioritárias",
-            "requested_pages": len(priority_pages),
+            "label": f"Rápida - {len(configured_pages)} URLs configuradas",
+            "requested_pages": len(configured_pages),
             "duration": option["duration"],
-            "source": "Páginas prioritárias",
+            "source": configured_label,
             "sitemap_total": None,
+            "priority_pages": len(priority_pages),
+            "cluster_pages": cluster_count,
         }
 
     from modules.sitemap_robots import fetch_sitemap_urls
     sitemap = fetch_sitemap_urls()
     sitemap_pages = sitemap.get("urls", [])
     limit = option["limit"] or 48
-    selected = priority_pages[:]
+    selected = configured_pages[:]
     seen = set(selected)
     for page in sitemap_pages:
         normalized = normalize_url(page, site_url)
@@ -3402,7 +3419,7 @@ def _select_full_audit_pages(scope_key: str) -> tuple[list[str], dict]:
         if len(selected) >= limit:
             break
 
-    source = "Páginas prioritárias + sitemap" if priority_pages else "Sitemap"
+    source = f"{configured_label} + sitemap" if configured_pages else "Sitemap"
     if key == "priority":
         source = "Sitemap (modo rápido)"
     return selected[:limit], {
@@ -3413,6 +3430,8 @@ def _select_full_audit_pages(scope_key: str) -> tuple[list[str], dict]:
         "source": source,
         "sitemap_total": len(sitemap_pages),
         "sitemap_errors": sitemap.get("errors", []),
+        "priority_pages": len(priority_pages),
+        "cluster_pages": cluster_count,
     }
 
 
