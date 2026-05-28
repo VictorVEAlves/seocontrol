@@ -62,6 +62,37 @@ def test_full_audit_report_counts_warnings_as_onpage_findings(monkeypatch):
     assert "1 URLs analisadas de 25.296 localizadas no sitemap" in html
 
 
+def test_full_audit_report_lists_all_pages_and_reason_details(monkeypatch):
+    pages = [
+        {
+            "url": f"https://example.com/page-{index}",
+            "title": "Curto",
+            "issues": [],
+            "warnings": ["Meta title curto (5 chars - min 30)"],
+            "grade": "B",
+        }
+        for index in range(55)
+    ]
+    report = {
+        "onpage": pages,
+        "gsc": {},
+        "gsc_api": {},
+        "content_gap": {},
+        "backlog": [],
+        "ai_analysis": {},
+        "_audit_scope": {"source": "Sitemap"},
+    }
+    monkeypatch.setattr(dashboard, "get_site_url", lambda: "https://example.com")
+    monkeypatch.setattr(dashboard, "_load_last_audit", lambda: report)
+
+    html = dashboard.app.test_client().get("/full-audit/report/last").get_data(as_text=True)
+
+    assert "...e mais" not in html
+    assert "/page-54" in html
+    assert "Meta title curto (5 chars - min 30)" in html
+    assert "atual: Curto" in html
+
+
 def test_full_audit_screen_exposes_page_scope_and_time_estimates(monkeypatch):
     monkeypatch.setattr(dashboard, "get_site_url", lambda: "https://example.com")
     monkeypatch.setattr(config, "get_priority_pages", lambda: ["/marca", "/produto"])

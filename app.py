@@ -3921,8 +3921,88 @@ def full_audit_report(job_id):
         clean = _re.sub(r"https?://\S+", "", clean).strip()
         return clean[:80] if clean else t[:80]
 
-    # Build category → {severity, pages: set, example}
+    def _display_page_url(url: str) -> str:
+        raw = str(url or "")
+        site = str(get_site_url() or "").rstrip("/")
+        if site and raw.rstrip("/") == site:
+            return "/"
+        if site and raw.startswith(site):
+            return raw[len(site):] or "/"
+        return raw or "/"
+
+    def _finding_summary(text: str) -> str:
+        lower = str(text or "").casefold()
+        if "ausente" in lower:
+            return "ausente"
+        if "curto" in lower or "curta" in lower:
+            return "curto"
+        if "longo" in lower or "longa" in lower:
+            return "longo"
+        if "duplicad" in lower:
+            return "duplicado"
+        if "inacess" in lower or "status" in lower:
+            return "status inacessivel"
+        if "sem alt" in lower:
+            return "sem alt"
+        if "muito grande" in lower:
+            return "arquivo grande"
+        if "canonical" in lower:
+            return "canonical"
+        if "schema" in lower or "json-ld" in lower:
+            return "schema"
+        if "conteudo escasso" in lower or "conteúdo escasso" in lower:
+            return "conteudo escasso"
+        return str(text or "").split(" — ", 1)[0][:48]
+
+    def _enriched_finding_message(message: str, page: dict) -> str:
+        text = str(message or "")
+        lower = text.casefold()
+
+        if "meta title" in lower:
+            current = str(page.get("title") or "").strip()
+            if current and "atual:" not in lower:
+                return f"{text} — atual: {current[:100]}"
+        if "meta description" in lower:
+            current = str(page.get("description") or "").strip()
+            if current and "atual:" not in lower:
+                return f"{text} — atual: {current[:120]}"
+        if "sem alt" in lower:
+            examples = [str(x) for x in page.get("images_no_alt_examples", []) if x]
+            if examples:
+                return f"{text} — exemplos: {', '.join(examples[:3])}"
+        if "inacess" in lower and page.get("status"):
+            return f"{text} — status HTTP {page.get('status')}"
+
+        return text
+
+    # Build category -> findings per affected page.
     cat_map: dict = {}
+
+    def _add_finding(category: str, page_url: str, grade: str, message: str, severity: str) -> None:
+        page_url = str(page_url or "")
+        if category not in cat_map:
+            cat_map[category] = {
+                "severity": severity,
+                "page_order": [],
+                "findings": {},
+                "summaries": {},
+                "grades": [],
+            }
+        elif severity == "issue":
+            cat_map[category]["severity"] = "issue"
+
+        bucket = cat_map[category]
+        if page_url not in bucket["findings"]:
+            bucket["findings"][page_url] = []
+            bucket["page_order"].append(page_url)
+
+        if message and message not in [item["message"] for item in bucket["findings"][page_url]]:
+            bucket["findings"][page_url].append({"message": message, "severity": severity})
+            summary = _finding_summary(message)
+            bucket["summaries"][summary] = bucket["summaries"].get(summary, 0) + 1
+
+        bucket["grades"].append(grade)
+
     for page in onpage:
         if not isinstance(page, dict):
             continue
@@ -3930,22 +4010,27 @@ def full_audit_report(job_id):
         grade = page.get("grade", "?")
         for issue in page.get("issues", []):
             cat = _categorize_issue(str(issue))
-            if cat not in cat_map:
-                cat_map[cat] = {"severity": "issue", "pages": [], "grades": []}
-            cat_map[cat]["pages"].append(url)
-            cat_map[cat]["grades"].append(grade)
+            _add_finding(
+                cat,
+                url,
+                grade,
+                _enriched_finding_message(str(issue), page),
+                "issue",
+            )
         for warn in _scoreable_onpage_warnings(page):
             cat = _categorize_issue(str(warn))
-            if cat not in cat_map:
-                cat_map[cat] = {"severity": "warning", "pages": [], "grades": []}
-            # Only upgrade to issue if never set as issue
-            cat_map[cat]["pages"].append(url)
-            cat_map[cat]["grades"].append(grade)
+            _add_finding(
+                cat,
+                url,
+                grade,
+                _enriched_finding_message(str(warn), page),
+                "warning",
+            )
 
     # Sort by count descending, issues before warnings
     sorted_cats = sorted(
         cat_map.items(),
-        key=lambda kv: (0 if kv[1]["severity"] == "issue" else 1, -len(kv[1]["pages"]))
+        key=lambda kv: (0 if kv[1]["severity"] == "issue" else 1, -len(kv[1]["page_order"]))
     )
 
     if not sorted_cats:
@@ -3953,41 +4038,60 @@ def full_audit_report(job_id):
     else:
         cat_rows = ""
         for idx, (cat, info) in enumerate(sorted_cats):
-            count = len(info["pages"])
             sev = info["severity"]
             badge_color = "var(--bad)" if sev == "issue" else "var(--warn)"
             badge_label = "Erro" if sev == "issue" else "Aviso"
-            # deduplicate pages preserving order
-            seen = set()
-            unique_pages = []
-            for p in info["pages"]:
-                if p not in seen:
-                    seen.add(p)
-                    unique_pages.append(p)
-            page_links = "".join(
-                f'<div style="padding:2px 0;font-size:12px">'
-                f'<a href="/url?target={quote(p)}" title="{esc(p)}" '
-                f'style="color:var(--accent)">{esc(p.replace(get_site_url(),"") or "/")}</a>'
-                f'</div>'
-                for p in unique_pages[:50]
+            unique_pages = info["page_order"]
+            summary_parts = [
+                f"{label}: {count} ocorrência{'s' if count != 1 else ''}"
+                for label, count in sorted(
+                    info["summaries"].items(),
+                    key=lambda item: (-item[1], item[0])
+                )[:4]
+            ]
+            summary_html = (
+                f'<div class="issue-cat-summary">{esc(" · ".join(summary_parts))}</div>'
+                if summary_parts else ""
             )
-            more = f'<div style="color:var(--muted);font-size:11px">...e mais {len(unique_pages)-50} páginas</div>' if len(unique_pages) > 50 else ""
+            page_blocks = []
+            for p in unique_pages:
+                finding_badges = "".join(
+                    f'<span class="finding-pill {esc(item["severity"])}">{esc(item["message"])}</span>'
+                    for item in info["findings"].get(p, [])
+                )
+                page_blocks.append(
+                    f'<div class="issue-page-detail">'
+                    f'<a class="issue-page-url" href="/url?target={quote(p)}" title="{esc(p)}">'
+                    f'{esc(_display_page_url(p))}</a>'
+                    f'<div class="issue-page-reasons">{finding_badges}</div>'
+                    f'</div>'
+                )
+            page_links = f'<div class="issue-detail-wrap">{"".join(page_blocks)}</div>'
             cat_rows += f"""
 <tr class="issue-cat-row" onclick="toggleCatDetail('cat{idx}')" style="cursor:pointer">
   <td style="width:36px;text-align:center;color:var(--muted);font-size:13px">▶</td>
-  <td style="font-weight:500">{esc(cat)}</td>
+  <td style="font-weight:500"><div>{esc(cat)}</div>{summary_html}</td>
   <td style="width:90px"><span style="background:{badge_color};color:#fff;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600">{badge_label}</span></td>
   <td style="width:80px;text-align:right;font-weight:700;color:{badge_color}">{len(unique_pages)} página{"s" if len(unique_pages)!=1 else ""}</td>
 </tr>
 <tr id="cat{idx}" style="display:none;background:var(--surface2,#f9f9f9)">
   <td></td>
-  <td colspan="3" style="padding:8px 4px 12px">{page_links}{more}</td>
+  <td colspan="3" style="padding:8px 4px 12px">{page_links}</td>
 </tr>"""
 
         issues_html = f"""
 <style>
 .issue-cat-row:hover td {{ background: var(--hover, rgba(0,0,0,.04)); }}
 .issue-cat-row.open td:first-child {{ color:var(--accent) }}
+.issue-cat-summary {{ color:var(--muted); font-size:12px; margin-top:3px; font-weight:400; }}
+.issue-detail-wrap {{ max-height:420px; overflow:auto; padding-right:6px; }}
+.issue-page-detail {{ padding:7px 0; border-bottom:1px solid var(--line); }}
+.issue-page-detail:last-child {{ border-bottom:0; }}
+.issue-page-url {{ color:var(--accent); font-size:12px; font-weight:700; overflow-wrap:anywhere; }}
+.issue-page-reasons {{ margin-top:4px; }}
+.finding-pill {{ display:inline-block; margin:2px 5px 2px 0; padding:2px 7px; border-radius:999px; font-size:11px; font-weight:600; line-height:1.5; }}
+.finding-pill.issue {{ background:rgba(220,38,38,.09); color:var(--bad); }}
+.finding-pill.warning {{ background:rgba(217,119,6,.10); color:var(--warn); }}
 </style>
 <table class="data-table">
   <thead><tr><th style="width:36px"></th><th>Categoria do problema</th><th>Tipo</th><th style="text-align:right">Páginas afetadas</th></tr></thead>
