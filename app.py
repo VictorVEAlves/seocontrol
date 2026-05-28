@@ -913,7 +913,7 @@ def build_tool_command(form) -> list[str]:
         cmd.extend(["--provider", provider])
 
     comparison = form.get("comparison", "week").strip()
-    if module in {"gsc-api", "keyword-tracker", "cannibalization", "blog-ideas"} and comparison in ("week", "month", "year"):
+    if module in {"gsc-api", "keyword-tracker", "cannibalization", "blog-ideas", "ai-insights"} and comparison in ("week", "month", "year"):
         cmd.extend(["--comparison", comparison])
 
     if module in AI_TOOL_MODULES and form.get("ai"):
@@ -2025,7 +2025,7 @@ TOOL_GROUPS = [
             {
                 "key": "gsc-api",
                 "name": "Tendências GSC (API ao vivo)",
-                "desc": "Compara semana atual vs anterior via API do Google Search Console. Detecta quedas de impressões e cliques por página.",
+                "desc": "Compara períodos via API do Google Search Console. Detecta quedas de impressões e cliques por página.",
                 "icon": "📉",
                 "tags": ["urls", "comparison"],
                 "badge": "API",
@@ -2103,9 +2103,9 @@ TOOL_GROUPS = [
             {
                 "key": "ai-insights",
                 "name": "AI Insights — Gemini",
-                "desc": "Busca dados ao vivo do GSC API e envia para o Gemini gerar resumo executivo, alertas críticos, saúde das marcas, tarefas ICE e rewrites de snippet. Gemini é usado automaticamente.",
+                "desc": "Busca dados ao vivo do GSC API no período escolhido e envia para o Gemini gerar resumo executivo, alertas críticos, saúde das marcas, tarefas ICE e rewrites de snippet.",
                 "icon": "✨",
-                "tags": [],
+                "tags": ["comparison"],
                 "badge": "Gemini",
             },
             {
