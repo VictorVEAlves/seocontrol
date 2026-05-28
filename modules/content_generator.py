@@ -14,10 +14,10 @@ Provedores suportados (todos com tier gratuito):
                Chave em: console.anthropic.com
 
 Uso via run.py:
-  python run.py --module generate --urls /lacoste --provider gemini --api-key AIza...
-  python run.py --module generate --urls /lacoste --provider groq   --api-key gsk_...
-  python run.py --module generate --urls /lacoste --provider openrouter --api-key sk-or-...
-  python run.py --module generate --urls /lacoste --provider mistral --api-key ...
+  python run.py --module generate --urls /categoria --provider gemini --api-key AIza...
+  python run.py --module generate --urls /categoria --provider groq   --api-key gsk_...
+  python run.py --module generate --urls /categoria --provider openrouter --api-key sk-or-...
+  python run.py --module generate --urls /categoria --provider mistral --api-key ...
 """
 
 import json
@@ -30,29 +30,36 @@ from pathlib import Path
 import requests
 
 from config import (
-    BASE_DIR, SITE_URL, OPENROUTER_MODEL, OPENROUTER_FALLBACK_MODELS,
-    get_default_provider, get_provider_api_key, get_provider_sequence
+    BASE_DIR, OPENROUTER_MODEL, OPENROUTER_FALLBACK_MODELS,
+    get_business_context, get_content_guidelines, get_default_provider,
+    get_provider_api_key, get_provider_sequence, get_site_name, get_site_url
 )
 
 PENDING_FILE = BASE_DIR / "pending_changes.json"
+SYSTEM_PROMPT_OVERRIDE: str | None = None
 
 # ── System prompt (igual para todos os provedores) ────────────────────────────
 
-SYSTEM_PROMPT = """Você é um especialista em SEO para e-commerce de moda masculina premium no Brasil.
+def _system_prompt() -> str:
+    if SYSTEM_PROMPT_OVERRIDE:
+        return SYSTEM_PROMPT_OVERRIDE
+    site = get_site_url() or "site configurado pelo cliente"
+    return f"""Você é um especialista em SEO para o negócio abaixo.
 
-Site: secretoutlet.com.br — outlet oficial e revendedor autorizado de marcas premium
-(Lacoste, Tommy Hilfiger, Columbia, Reserva, Calvin Klein, Levi's, Aramis, Dudalina e outras)
+Site: {get_site_name()} — {site}
+Contexto do negócio: {get_business_context()}
+Diretrizes do cliente: {get_content_guidelines()}
 
 Regras fixas:
-- Meta title: 50–60 caracteres. Incluir marca + benefício. Nunca usar "!" ou emojis.
-- Meta description: 145–160 caracteres. CTA implícito. Mencionar "revendedor autorizado" quando relevante.
+- Meta title: 50–60 caracteres. Incluir entidade principal + benefício real. Nunca usar "!" ou emojis.
+- Meta description: 145–160 caracteres. CTA implícito e compatível com o contexto do cliente.
 - Meta keywords: 8–12 termos separados por vírgula.
 - H1: diferente do meta title. Máximo 65 caracteres.
 - description_html: 3–5 parágrafos em HTML. Incluir 1 H2, 2–3 <p> e 1 lista <ul> com benefícios.
   Tom consultivo. Sem markdown — apenas HTML limpo.
 
 IMPORTANTE — comprimentos obrigatórios (conte os caracteres antes de responder):
-- meta_title: MÍNIMO 50, MÁXIMO 60 caracteres. Exemplo com 54 chars: "Lacoste Outlet | Roupas e Tênis com até 50% OFF"
+- meta_title: MÍNIMO 50, MÁXIMO 60 caracteres. Exemplo genérico: "Categoria Principal | Benefício Claro para Comprar"
 - meta_description: MÍNIMO 145, MÁXIMO 160 caracteres. Preencha até o limite.
 - h1: MÍNIMO 40, MÁXIMO 65 caracteres.
 
@@ -72,7 +79,7 @@ def _call_gemini(prompt: str, api_key: str) -> str:
     # Try gemini-2.0-flash first, fallback to gemini-1.5-flash-8b
     models = ["gemini-2.0-flash", "gemini-1.5-flash-8b", "gemini-2.0-flash-lite"]
     body = {
-        "contents": [{"parts": [{"text": SYSTEM_PROMPT + "\n\n" + prompt}]}],
+        "contents": [{"parts": [{"text": _system_prompt() + "\n\n" + prompt}]}],
         "generationConfig": {"temperature": 0.4, "maxOutputTokens": 1500},
     }
     last_error = None
@@ -104,7 +111,7 @@ def _call_groq(prompt: str, api_key: str) -> str:
     body = {
         "model": "llama-3.3-70b-versatile",
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": _system_prompt()},
             {"role": "user",   "content": prompt},
         ],
         "temperature": 0.4,
@@ -120,7 +127,7 @@ def _call_openrouter(prompt: str, api_key: str) -> str:
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
-        "HTTP-Referer": SITE_URL,
+        "HTTP-Referer": get_site_url() or "http://localhost",
         "X-Title": "SEO Control Center",
     }
     models = []
@@ -130,7 +137,7 @@ def _call_openrouter(prompt: str, api_key: str) -> str:
 
     base_body = {
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": _system_prompt()},
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.35,
@@ -191,7 +198,7 @@ def _call_mistral(prompt: str, api_key: str) -> str:
     body = {
         "model": "mistral-small-latest",
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": _system_prompt()},
             {"role": "user",   "content": prompt},
         ],
         "temperature": 0.4,
@@ -211,7 +218,7 @@ def _call_anthropic(prompt: str, api_key: str) -> str:
     msg = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=1500,
-        system=SYSTEM_PROMPT,
+        system=_system_prompt(),
         messages=[{"role": "user", "content": prompt}],
     )
     return msg.content[0].text
@@ -262,10 +269,14 @@ def _build_prompt(page: dict, gsc_data: dict = None) -> str:
     if current["warnings"]:
         issues_block += f"\nAvisos: {', '.join(current['warnings'])}"
 
+    site_url = get_site_url()
+    full_url = url if url.startswith("http") else (site_url + url if site_url else url)
+
     return f"""Otimize os campos SEO da seguinte página:
 
-URL: {SITE_URL}{url}
+URL: {full_url}
 Marca/slug: {slug}
+Contexto do negócio: {get_business_context()}
 
 Dados atuais:
 - Meta title ({len(current['title'])} chars): "{current['title']}"
@@ -274,8 +285,8 @@ Dados atuais:
 - Keywords: "{current['keywords']}"
 - Palavras no conteúdo: {current['words']}{issues_block}{gsc_block}
 
-Gere versões otimizadas. Na description_html crie conteúdo relevante para a marca,
-mencionando que somos revendedores autorizados, com desconto, nota fiscal e parcelamento."""
+Gere versões otimizadas. Na description_html crie conteúdo relevante para o contexto do cliente
+e respeite as diretrizes comerciais configuradas."""
 
 
 # ── Core generation ───────────────────────────────────────────────────────────
@@ -402,16 +413,17 @@ def generate_for_pages(pages: list, gsc_data: dict = None,
 
     for page in iterator:
         url = page.get("url", page.get("final_url", ""))
+        base = get_site_url()
         try:
             content          = generate_for_page(page, gsc_data, provider, api_key)
             content["status"] = "pending"
             results.append(content)
             tl = content["_meta_title_len"]
             dl = content["_meta_desc_len"]
-            print(f"   ok {url.replace(SITE_URL,'')[:50]:50s}  "
+            print(f"   ok {url.replace(base,'')[:50]:50s}  "
                   f"title:{tl}ch desc:{dl}ch")
         except Exception as e:
-            print(f"   x  {url.replace(SITE_URL,'')[:50]} — {e}")
+            print(f"   x  {url.replace(base,'')[:50]} — {e}")
 
     _save_to_queue(results)
     return results

@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 from dotenv import load_dotenv
 from supabase import Client, create_client
 
-from config import SITE_URL
+from config import get_site_name, get_site_url
 
 load_dotenv()
 
@@ -50,12 +50,14 @@ def _clean(value: Any) -> Any:
 
 
 def _path(url: str) -> str:
-    full = url if url.startswith("http") else SITE_URL + url
+    base = get_site_url()
+    full = url if url.startswith("http") else base + url
     return urlparse(full).path or "/"
 
 
 def _full_url(url: str) -> str:
-    return url if url.startswith("http") else SITE_URL + url
+    base = get_site_url()
+    return url if url.startswith("http") else base + url
 
 
 def _url_type(path: str) -> str:
@@ -461,7 +463,7 @@ def _save_recommendations(sb: Client, site_id: str, run_id: str, items: list) ->
 
 def save_content_changes(items: list) -> int:
     sb = _client()
-    site_id = _upsert_site(sb, "Secret Outlet", SITE_URL)
+    site_id = _upsert_site(sb, get_site_name(), get_site_url())
     rows = []
     for item in items or []:
         url = item.get("_url") or item.get("url") or ""
@@ -491,7 +493,7 @@ def save_tag_suggestions(items: list) -> int:
     if not items:
         return 0
     sb      = _client()
-    site_id = _upsert_site(sb, "Secret Outlet", SITE_URL)
+    site_id = _upsert_site(sb, get_site_name(), get_site_url())
     run_id  = _create_run(sb, site_id, "gsc-api", [], {"tag_suggestions": len(items)})
 
     # Remove stale open tag-suggestion tasks so we don't accumulate duplicates
@@ -524,7 +526,7 @@ def save_tag_suggestions(items: list) -> int:
 
 def save_blog_ideas(ideas: list) -> int:
     sb = _client()
-    site_id = _upsert_site(sb, "Secret Outlet", SITE_URL)
+    site_id = _upsert_site(sb, get_site_name(), get_site_url())
     rows = []
     for idea in ideas or []:
         url = idea.get("url") or f"/{idea.get('url_slug', '')}"
@@ -549,7 +551,7 @@ def save_blog_ideas(ideas: list) -> int:
 
 def save_audit_results(results: dict, run_type: str, scope: list) -> str:
     sb = _client()
-    site_id = _upsert_site(sb, "Secret Outlet", SITE_URL)
+    site_id = _upsert_site(sb, get_site_name(), get_site_url())
     run_id = _create_run(sb, site_id, run_type, scope, _summary(results))
 
     # Clear stale open issues before inserting the fresh set from this run.

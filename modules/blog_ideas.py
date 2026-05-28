@@ -5,16 +5,25 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
-from config import BASE_DIR
-from modules.blog_suggester import BRAND_KEYWORDS, PRODUCT_KEYWORDS
+from config import BASE_DIR, get_brand_aliases, get_business_context, get_product_terms, get_site_name, get_site_url
 
 IDEAS_FILE = BASE_DIR / "blog_ideas.json"
 AI_BATCH_SIZE = 3
 
-AI_BLOG_IDEA_SYSTEM = """Voce e um estrategista senior de SEO e conteudo para e-commerce de moda masculina premium no Brasil.
+def _brand_keywords() -> set[str]:
+    values = set()
+    for brand, aliases in get_brand_aliases().items():
+        values.add(brand)
+        values.update(aliases)
+    return {value for value in values if value}
+
+
+def _blog_idea_system() -> str:
+    return f"""Voce e um estrategista senior de SEO e conteudo.
 
 Contexto:
-- Site: Secret Outlet, revendedor autorizado de marcas premium.
+- Site: {get_site_name()} ({get_site_url() or "site configurado pelo cliente"}).
+- Negocio: {get_business_context()}.
 - Objetivo: transformar queries do Google Search Console em pautas de blog que geram trafego qualificado e apoiam venda de categorias/produtos.
 
 Regras:
@@ -27,7 +36,7 @@ Regras:
 - Retorne APENAS JSON valido, sem markdown e sem texto fora do JSON.
 
 Formato:
-{
+{{
   "h1": "...",
   "meta_title": "...",
   "meta_description": "...",
@@ -37,20 +46,22 @@ Formato:
   "sections": ["...", "..."],
   "faq": ["...", "..."],
   "entities": ["...", "..."],
-  "internal_links": [{"anchor": "...", "url": "...", "reason": "..."}],
+  "internal_links": [{{"anchor": "...", "url": "...", "reason": "..."}}],
   "recommended_products_or_categories": ["...", "..."],
   "brief_notes": ["...", "..."]
-}"""
+}}"""
 
-AI_BLOG_IDEAS_BATCH_SYSTEM = """Voce e um estrategista senior de SEO e editor de conteudo para e-commerce de moda masculina premium no Brasil.
+def _blog_ideas_batch_system() -> str:
+    return f"""Voce e um estrategista senior de SEO e editor de conteudo.
 
 Contexto:
-- Site: Secret Outlet, revendedor autorizado de marcas premium.
+- Site: {get_site_name()} ({get_site_url() or "site configurado pelo cliente"}).
+- Negocio: {get_business_context()}.
 - Objetivo: transformar queries do Google Search Console em pautas de blog COMPLETAMENTE DIFERENTES entre si, com potencial comercial real.
 
 Regras editoriais obrigatorias:
 - DIVERSIDADE E OBRIGATORIA: cada pauta deve ter H1, meta_description, angle, sections e content_type diferentes das outras. Nao repita a mesma formula em nenhum campo.
-- Angulos disponiveis (use um diferente por pauta): autenticidade, tamanho/caimento, comparativo de modelos, ocasiao de uso (trabalho/casual/esporte), custo-beneficio, materiais e durabilidade, presente masculino, estilo minimalista, produto original vs falsificado, como montar looks, tendencias da marca, historia da marca.
+- Angulos disponiveis (use um diferente por pauta): comparativo, custo-beneficio, materiais/durabilidade, passo a passo, erros comuns, tendencias, duvidas frequentes, checklist, casos de uso, mitos e verdades.
 - H1: responde a query principal diretamente. Sem "Guia de escolha e", "Descubra os", "Encontre o" no inicio.
 - meta_description: cada uma deve ter um foco diferente — uma fala de tamanho, outra de preco, outra de autenticidade, outra de looks, etc. Nunca use "Dicas de material, caimento e como montar looks versateis" — essa frase e proibida.
 - sections: cada pauta deve ter uma estrutura de topicos diferente. Nao use "Melhores modelos" e "Como combinar no dia a dia" em todas as pautas.
@@ -61,9 +72,9 @@ Regras editoriais obrigatorias:
 - Retorne APENAS JSON valido, sem markdown e sem texto fora do JSON.
 
 Formato:
-{
+{{
   "ideas": [
-    {
+    {{
       "url_slug": "mesmo url_slug recebido",
       "h1": "...",
       "meta_title": "...",
@@ -74,12 +85,12 @@ Formato:
       "sections": ["...", "..."],
       "faq": ["...", "..."],
       "entities": ["...", "..."],
-      "internal_links": [{"anchor": "...", "url": "...", "reason": "..."}],
+      "internal_links": [{{"anchor": "...", "url": "...", "reason": "..."}}],
       "recommended_products_or_categories": ["...", "..."],
       "brief_notes": ["...", "..."]
-    }
+    }}
   ]
-}"""
+}}"""
 
 MODIFIERS = {
     "melhor",
@@ -152,14 +163,14 @@ GENERIC_TITLE_PATTERNS = [
 
 TITLE_ANGLES = [
     "{product_title} {brand_title} original: como identificar antes de comprar",
-    "{product_title} {brand_title} masculino: modelos para usar no dia a dia",
+    "{product_title} {brand_title}: opções para usar no dia a dia",
     "{product_title} {brand_title}: o que comparar antes de escolher",
-    "{product_title} {brand_title}: tamanho, caimento e conforto",
+    "{product_title} {brand_title}: critérios para decidir melhor",
     "{product_title} {brand_title} com desconto: sinais de uma boa compra",
-    "{product_title} {brand_title}: combinacoes para um visual casual premium",
+    "{product_title} {brand_title}: combinações e usos práticos",
     "{product_title} {brand_title}: materiais, acabamento e durabilidade",
-    "{product_title} {brand_title}: quando vale investir na marca",
-    "{product_title} {brand_title}: como montar looks sem erro",
+    "{product_title} {brand_title}: quando vale investir",
+    "{product_title} {brand_title}: como escolher sem erro",
     "{product_title} {brand_title}: perguntas antes de comprar online",
 ]
 
@@ -170,20 +181,21 @@ def _tokens(query: str) -> list[str]:
 
 def _detect_brand(tokens: list[str]) -> str:
     joined = " ".join(tokens)
-    for brand in sorted(BRAND_KEYWORDS, key=len, reverse=True):
+    for brand in sorted(_brand_keywords(), key=len, reverse=True):
         if brand in joined:
             return brand.replace(" ", "-")
     return ""
 
 
 def _detect_product(tokens: list[str]) -> str:
+    configured = get_product_terms()
     for token in tokens:
-        normalized = PLURAL_NORMALIZATION.get(token)
-        if normalized:
-            return normalized
-    for token in tokens:
-        if token in PRODUCT_KEYWORDS:
+        if token in configured:
             return PLURAL_NORMALIZATION.get(token, token)
+    for token in tokens:
+        singular = token.rstrip("s")
+        if singular in configured:
+            return PLURAL_NORMALIZATION.get(singular, singular)
     return ""
 
 
@@ -197,7 +209,7 @@ def _title_for(product: str, brand: str, intent: str) -> str:
     if intent == "guide":
         return f"Como escolher {product_label} {brand_label}"
     if intent == "comparison":
-        return f"{brand_label}: guia de {product_label} masculinos"
+        return f"{brand_label}: guia de {product_label}"
     return f"Melhores {product_label} {brand_label}"
 
 
@@ -226,7 +238,7 @@ _INTENT_SECTIONS = {
     "guide": lambda p, b: [
         f"Como escolher o tamanho certo de {p} {b}",
         f"Materiais e acabamento: o que avaliar em {p} {b}",
-        f"Diferenca entre modelos basicos e premium",
+        f"Diferenca entre modelos basicos e avancados",
         f"Como cuidar e conservar {p} {b} por mais tempo",
         f"Onde comprar {p} {b} original com seguranca",
     ],
@@ -238,7 +250,7 @@ _INTENT_SECTIONS = {
         f"Qual modelo comprar primeiro?",
     ],
     "best": lambda p, b: [
-        f"Os modelos de {p} {b} mais buscados em 2025",
+        f"O que avaliar nos modelos de {p} {b} mais buscados",
         f"Diferenciais que fazem {b} se destacar nessa categoria",
         f"Como combinar {p} {b} em looks casuais e semi-formais",
         f"Sinais de autenticidade no produto {b}",
@@ -258,7 +270,7 @@ _INTENT_FAQ = {
         f"Qual a diferenca entre os modelos de {p} {b}?",
     ],
     "best": lambda p, b: [
-        f"{b} tem {p} masculino original disponivel?",
+        f"{b} tem {p} original disponivel?",
         f"Quais os {p} {b} mais vendidos?",
         f"Como comprar {p} {b} com desconto e seguranca?",
     ],
@@ -374,7 +386,7 @@ def enhance_idea_with_ai(
     }, ensure_ascii=False, indent=2)
     ai_data = call_json(
         prompt=prompt,
-        system_prompt=AI_BLOG_IDEA_SYSTEM,
+        system_prompt=_blog_idea_system(),
         provider=provider,
         api_key=api_key,
         fallback={},
@@ -542,7 +554,7 @@ def _enhance_ideas_chunk(
 
     ai_data = call_json(
         prompt=prompt,
-        system_prompt=AI_BLOG_IDEAS_BATCH_SYSTEM,
+        system_prompt=_blog_ideas_batch_system(),
         provider=provider,
         api_key=api_key,
         fallback={},

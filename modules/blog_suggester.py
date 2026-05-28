@@ -19,7 +19,9 @@ from datetime import datetime
 from pathlib import Path
 from collections import defaultdict
 
-from config import BASE_DIR, SITE_URL, get_default_provider, get_provider_api_key
+from config import (BASE_DIR, get_brand_aliases, get_business_context,
+                    get_default_provider, get_product_terms, get_provider_api_key,
+                    get_site_name, get_site_url)
 
 BRIEFS_FILE = BASE_DIR / "blog_briefs.json"
 
@@ -32,20 +34,8 @@ STOPWORDS = {
     "melhor", "melhores", "novo", "novos", "grande", "pequeno", "tipo",
 }
 
-# Marcas conhecidas — queries com essas palavras vão para o cluster da marca
-BRAND_KEYWORDS = {
-    "lacoste", "tommy", "hilfiger", "columbia", "reserva", "calvin", "klein",
-    "aramis", "levis", "levi", "dudalina", "crocs", "ralph", "lauren",
-    "north face", "polo", "john john", "kingjoe", "king joe",
-}
-
-# Categorias de produto — para detectar intenção
-PRODUCT_KEYWORDS = {
-    "jaqueta", "jaquetas", "moletom", "moletons", "blusa", "blusas",
-    "tenis", "tênis", "camiseta", "camisetas", "calca", "calças", "polo",
-    "camisa", "camisas", "bone", "boné", "chinelo", "sandalia",
-    "bermuda", "bermudas", "short", "shorts", "meia", "cueca",
-}
+BRAND_KEYWORDS = set()
+PRODUCT_KEYWORDS = set()
 
 # Intenções informacionais → oportunidade de blog
 INFORMATIONAL_SIGNALS = {
@@ -55,10 +45,23 @@ INFORMATIONAL_SIGNALS = {
     "legitimo", "falso", "desconto",
 }
 
-# Termos que identificam queries sobre o próprio site — devem ser ignoradas
-# "secret" ou "secretoutlet" em qualquer query = navegacional para o site
-# "outlet" sozinho (sem produto) também é tratado em _is_site_query()
-SITE_TERMS = {"secret", "secretoutlet"}
+def _brand_keywords() -> set[str]:
+    values = set()
+    for brand, aliases in get_brand_aliases().items():
+        values.add(brand)
+        values.update(aliases)
+        for alias in aliases:
+            values.update(alias.split())
+    return {v for v in values if v}
+
+
+def _product_keywords() -> set[str]:
+    return set(get_product_terms())
+
+
+def _site_terms() -> set[str]:
+    host = get_site_name().lower().replace(".", " ").replace("-", " ")
+    return {token for token in host.split() if len(token) > 2}
 
 
 # ── Clustering ────────────────────────────────────────────────────────────────
@@ -70,7 +73,7 @@ def _clean_query(q: str) -> list:
 
 
 def _detect_brand(tokens: list) -> str:
-    for brand in BRAND_KEYWORDS:
+    for brand in _brand_keywords():
         brand_tokens = brand.split()
         if all(bt in tokens for bt in brand_tokens):
             return brand.replace(" ", "-")
@@ -80,7 +83,7 @@ def _detect_brand(tokens: list) -> str:
 def _detect_intent(tokens: list) -> str:
     if any(t in INFORMATIONAL_SIGNALS for t in tokens):
         return "informational"
-    if any(t in PRODUCT_KEYWORDS for t in tokens):
+    if any(t in _product_keywords() for t in tokens):
         return "commercial"
     return "navigational"
 
@@ -91,21 +94,18 @@ def _cluster_key(tokens: list, brand: str) -> str:
         brand_simple = brand.replace("-", " ")
         # Find a product word that isn't the same word as the brand itself
         product = next(
-            (t for t in tokens if t in PRODUCT_KEYWORDS and t not in brand_simple.split()),
+            (t for t in tokens if t in _product_keywords() and t not in brand_simple.split()),
             ""
         )
         return f"{brand}-{product}" if product else brand
     # No brand: use first 2 meaningful tokens
-    meaningful = [t for t in tokens if t not in BRAND_KEYWORDS][:2]
+    meaningful = [t for t in tokens if t not in _brand_keywords()][:2]
     return "-".join(meaningful) if meaningful else tokens[0] if tokens else "outros"
 
 
 def _is_site_query(tokens: list) -> bool:
     """Return True if the query is about the site itself (navigational, skip it)."""
-    if any(t in SITE_TERMS for t in tokens):
-        return True
-    # "outlet" sem nenhuma marca de produto = provavelmente buscando o site
-    if "outlet" in tokens and not any(t in PRODUCT_KEYWORDS for t in tokens):
+    if any(t in _site_terms() for t in tokens):
         return True
     return False
 
@@ -153,7 +153,7 @@ def detect_gaps(clusters: dict, pages: list) -> list:
     known_slugs = set()
     for p in pages:
         url = p.get("page", "")
-        path = url.replace(SITE_URL, "").strip("/")
+        path = url.replace(get_site_url(), "").strip("/")
         parts = path.split("/")
         for part in parts:
             known_slugs.add(part.lower().replace("-", " "))
@@ -164,7 +164,7 @@ def detect_gaps(clusters: dict, pages: list) -> list:
         cluster_str = key.replace("-", " ")
         # A cluster is only "covered" if there's a slug that matches the FULL
         # cluster string (both brand + product), not just one token of it.
-        # This prevents "/lacoste" from marking "lacoste-tenis" as covered.
+        # This prevents a broad entity page from marking entity+product gaps as covered.
         covered = any(
             cluster_str == slug or cluster_str in slug
             for slug in known_slugs
@@ -212,15 +212,17 @@ def score_opportunities(clusters: dict, pages: list) -> list:
 
 # ── Brief generation ──────────────────────────────────────────────────────────
 
-BRIEF_SYSTEM = """Você é um especialista em SEO e content marketing para e-commerce de moda masculina premium no Brasil.
+def _brief_system() -> str:
+    return f"""Você é um especialista em SEO e content marketing.
 
-Site: secretoutlet.com.br — outlet oficial e revendedor autorizado de marcas premium.
+Site: {get_site_name()} — {get_site_url() or "site configurado pelo cliente"}.
+Contexto do negócio: {get_business_context()}
 
 Gere um brief completo para um post de blog focado em SEO. O post deve:
 - Ranquear para as queries indicadas
 - Ser informativo e útil, não apenas comercial
-- Mencionar naturalmente os produtos do Secret Outlet
-- Ter tom consultivo, como um especialista em moda masculina
+- Mencionar naturalmente produtos, serviços ou categorias do cliente quando fizer sentido
+- Ter tom consultivo e alinhado ao contexto do negócio
 
 Retorne APENAS um JSON válido. Formato exato:
 {
@@ -238,7 +240,7 @@ Retorne APENAS um JSON válido. Formato exato:
   "internal_links": [
     {"anchor": "texto do link", "url": "/pagina-destino", "where": "onde inserir no texto"}
   ],
-  "cta_section": "Parágrafo de CTA final apontando para produtos do Secret Outlet",
+  "cta_section": "Parágrafo de CTA final apontando para produtos, serviços ou categorias do cliente",
   "estimated_words": 1200
 }"""
 
@@ -267,7 +269,7 @@ def generate_brief(opportunity: dict, provider: str = None,
     intent  = opportunity.get("intent", "")
     cluster = opportunity.get("cluster_key", "")
 
-    prompt = f"""Crie um brief de post de blog para o secretoutlet.com.br com base nessas queries do Google:
+    prompt = f"""Crie um brief de post de blog para {get_site_name()} com base nessas queries do Google:
 
 Cluster: "{cluster}"
 Marca relacionada: {brand or "sem marca específica"}
@@ -281,9 +283,8 @@ Queries principais:
 O post deve ranquear primariamente para: "{top_q[0]['query'] if top_q else cluster}"
 
 Links internos disponíveis (use os mais relevantes):
-- /{brand} → página da marca
-- /masculino → categoria masculino
-- /blusas-jaquetas-e-moletons-{brand} → jaquetas da marca (se aplicável)
+- páginas prioritárias configuradas no sistema
+- URLs presentes nos dados do Search Console
 
 Gere o brief completo seguindo o formato JSON especificado."""
 
@@ -299,14 +300,14 @@ Gere o brief completo seguindo o formato JSON especificado."""
 
     # Temporarily override system prompt
     import modules.content_generator as cg
-    original = cg.SYSTEM_PROMPT
-    cg.SYSTEM_PROMPT = BRIEF_SYSTEM
+    original = cg.SYSTEM_PROMPT_OVERRIDE
+    cg.SYSTEM_PROMPT_OVERRIDE = _brief_system()
 
     try:
         raw    = caller(prompt, api_key)
         result = _parse_json(raw)
     finally:
-        cg.SYSTEM_PROMPT = original
+        cg.SYSTEM_PROMPT_OVERRIDE = original
 
     result["_cluster"]      = cluster
     result["_brand"]        = brand

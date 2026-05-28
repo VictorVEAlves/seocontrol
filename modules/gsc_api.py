@@ -8,7 +8,7 @@ Setup (one-time):
   2. Enable "Google Search Console API"
   3. Create OAuth 2.0 credentials (type: Desktop app)
   4. Download JSON → save as gsc_credentials.json in project root
-  5. Set GSC_PROPERTY_URL=https://www.secretoutlet.com.br/ in .env
+  5. Configure a propriedade GSC em /settings ou GSC_PROPERTY_URL no .env
   6. Run once: python run.py --module gsc-api
      → browser opens for auth → token saved to .gsc_token.json
 
@@ -24,7 +24,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
-from config import (BASE_DIR, SITE_URL, BRAND_CLUSTERS, GEMINI_API_KEY,
+from config import (BASE_DIR, GEMINI_API_KEY,
                     disable_broken_local_proxy, get_site_url, get_gsc_property, get_site_name,
                     get_brand_clusters)
 
@@ -1023,7 +1023,7 @@ Identifique: (a) queries com muitas impressões mas CTR < 2% — título/descrip
 Identifique páginas com impressões altas mas CTR abaixo da média do site ({cur_ctr:.2f}%). Cite URL e números.
 
 **Plano de Ação**
-3-5 ações concretas e priorizadas. Formato: "1. [Ação específica] — impacto esperado [métrica]". Ex: "Reescrever title de /tenis-lacoste para incluir 'outlet' — potencial de subir CTR de 1.2% para 3%+".
+3-5 ações concretas e priorizadas. Formato: "1. [Ação específica] — impacto esperado [métrica]". Ex: "Reescrever title da página prioritária para alinhar com a intenção da query — potencial de subir CTR de 1.2% para 3%+".
 
 Responda apenas em PT-BR. Sem texto fora das seções definidas."""
 

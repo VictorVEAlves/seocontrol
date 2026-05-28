@@ -1,7 +1,7 @@
 """
-Keyword Position Tracker — secretoutlet.com.br
+Keyword Position Tracker
 
-Uses the GSC API to track average position of top keywords per brand cluster.
+Uses the GSC API to track average position of top keywords per configured cluster.
 Compares the last 7 days vs the previous 7 days and flags keywords that:
   - Dropped below position 10 (left first page)
   - Worsened by ≥3 positions
@@ -16,24 +16,23 @@ import os
 from datetime import date, timedelta
 from urllib.parse import quote
 
-from config import BASE_DIR, BRAND_CLUSTERS, SITE_URL, disable_broken_local_proxy
+from config import BASE_DIR, disable_broken_local_proxy, get_brand_clusters, get_gsc_property, get_site_url
 
 disable_broken_local_proxy()
 
-_GSC_PROPERTY = os.environ.get("GSC_PROPERTY_URL", SITE_URL + "/")
 _CREDENTIALS_FILE = BASE_DIR / "gsc_credentials.json"
 _TOKEN_FILE       = BASE_DIR / ".gsc_token.json"
 _SCOPES           = ["https://www.googleapis.com/auth/webmasters.readonly"]
 
 _GSC_QUERY_URL = (
     "https://searchconsole.googleapis.com/webmasters/v3/sites/"
-    + quote(_GSC_PROPERTY, safe="")
+    + quote(get_gsc_property(), safe="")
     + "/searchAnalytics/query"
 )
 
 # Top/good pages worth tracking closely
 _TRACKED_PAGES: dict[str, dict] = {}
-for _brand, _cluster in BRAND_CLUSTERS.items():
+for _brand, _cluster in get_brand_clusters().items():
     _tier = _cluster.get("tier", "")
     for _p in [_cluster["pillar"]] + _cluster.get("pages", []):
         if _p:
@@ -108,7 +107,7 @@ def run(scope_urls: list[str] | None = None) -> dict:
     results: list[dict] = []
 
     for page_path in pages_to_check:
-        full_url = page_path if page_path.startswith("http") else SITE_URL + page_path
+        full_url = page_path if page_path.startswith("http") else get_site_url() + page_path
         page_filter = [{"dimension": "page", "operator": "equals", "expression": full_url}]
         meta = _TRACKED_PAGES.get(page_path.rstrip("/"), {})
 

@@ -1,6 +1,6 @@
 from difflib import SequenceMatcher
 from modules.crawler import get_page
-from config import SITE_URL
+from config import get_brand_aliases, get_site_url
 
 
 def _similarity(a: str, b: str) -> float:
@@ -31,12 +31,19 @@ def run(urls: list, threshold: float = 0.80) -> dict:
     Audit a list of URLs for duplicate/missing SEO fields.
     threshold: similarity ratio to flag as duplicate (0.0–1.0)
     """
+    base = get_site_url()
+    if not base and any(not u.startswith("http") for u in urls):
+        raise RuntimeError("Configure a URL do site antes de auditar duplicidade.")
+
+    def full_url(u: str) -> str:
+        return u if u.startswith("http") else base + u
+
     try:
         from rich.progress import track
-        pages = [_fetch_seo(u if u.startswith("http") else SITE_URL + u)
+        pages = [_fetch_seo(full_url(u))
                  for u in track(urls, description="Verificando duplicatas...")]
     except ImportError:
-        pages = [_fetch_seo(u if u.startswith("http") else SITE_URL + u) for u in urls]
+        pages = [_fetch_seo(full_url(u)) for u in urls]
 
     dup_titles   = []
     dup_descs    = []
@@ -61,8 +68,8 @@ def run(urls: list, threshold: float = 0.80) -> dict:
             from urllib.parse import urlparse
             slug = urlparse(pa["url"]).path.strip("/").split("/")[0]
             kw_lower = pa["meta_keywords"].lower()
-            for brand in ["lacoste", "tommy", "reserva", "aramis", "columbia",
-                          "calvin", "levis", "dudalina", "crocs", "polo", "north face"]:
+            configured_brands = set(get_brand_aliases().keys())
+            for brand in configured_brands:
                 if brand in kw_lower and brand not in slug.replace("-", " "):
                     kw_issues.append({
                         "url": pa["url"],

@@ -1,11 +1,14 @@
 from urllib.parse import urlparse
 
-from config import SITE_URL
+from config import get_site_url
 from modules.crawler import get_page, normalize_url
 
 
 def audit_url(url: str) -> dict:
-    full_url = url if url.startswith("http") else SITE_URL + url
+    base = get_site_url()
+    if not base and not url.startswith("http"):
+        raise RuntimeError("Configure a URL do site antes de auditar indexabilidade.")
+    full_url = url if url.startswith("http") else base + url
     status, soup, headers, final_url = get_page(full_url)
     normalized_final = normalize_url(final_url)
 

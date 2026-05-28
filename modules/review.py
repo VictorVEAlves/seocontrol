@@ -2,14 +2,14 @@
 Gera uma página HTML para revisão e aplicação manual das otimizações geradas.
 
 Lê o pending_changes.json e exibe cada campo com botão de copiar,
-organizado por página para facilitar a edição manual no Bagy.
+organizado por página para facilitar a edição manual no CMS do cliente.
 """
 
 from pathlib import Path
 from datetime import datetime
 import json
 
-from config import BASE_DIR, SITE_URL
+from config import BASE_DIR, get_site_name, get_site_url
 
 PENDING_FILE  = BASE_DIR / "pending_changes.json"
 BRIEFS_FILE   = BASE_DIR / "blog_briefs.json"
@@ -50,7 +50,7 @@ def _card(page: dict) -> str:
         items = "".join(f"<li>{w}</li>" for w in warnings)
         warn_html = f'<ul style="color:#e67e22;margin:4px 0 12px 16px;font-size:13px">{items}</ul>'
 
-    full_url = url if url.startswith("http") else SITE_URL + url
+    full_url = url if url.startswith("http") else get_site_url() + url
 
     return f"""
 <div class="card" id="{url.strip('/').replace('/', '-')}">
@@ -86,7 +86,7 @@ def _card(page: dict) -> str:
 
   <div class="field-group">
     <div class="field-label">Descrição HTML
-      <small style="color:#888;font-weight:400">(cole no editor HTML do Bagy)</small>
+      <small style="color:#888;font-weight:400">(cole no editor HTML do CMS)</small>
     </div>
     <div class="field-box code" onclick="copyThis(this)">{_esc(desc_html)}</div>
   </div>
@@ -197,7 +197,7 @@ def generate(output_path: str = None) -> str:
 
     if not pending and not briefs:
         print("  Nenhuma otimizacao pendente encontrada.")
-        print(f"  Execute: python run.py --module generate --urls /lacoste")
+        print("  Execute: python run.py --module generate --urls /categoria")
         return ""
 
     pending_count   = len([p for p in pending if p.get("status") == "pending"])
@@ -219,7 +219,7 @@ def generate(output_path: str = None) -> str:
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SEO Review — Secret Outlet</title>
+<title>SEO Review — {get_site_name()}</title>
 <style>
   * {{ box-sizing: border-box; margin: 0; padding: 0; }}
   body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -259,7 +259,7 @@ def generate(output_path: str = None) -> str:
 </head>
 <body>
 <div class="container">
-  <h1>SEO Review — Secret Outlet</h1>
+  <h1>SEO Review — {get_site_name()}</h1>
   <p class="subtitle">Gerado em {datetime.now().strftime('%d/%m/%Y %H:%M')} · Clique em qualquer campo para copiar</p>
 
   <div class="stats">

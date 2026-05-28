@@ -1,6 +1,6 @@
 import time
 import requests
-from config import PAGESPEED_API_KEY, SITE_URL, disable_broken_local_proxy
+from config import PAGESPEED_API_KEY, disable_broken_local_proxy, get_site_url
 
 disable_broken_local_proxy()
 
@@ -83,7 +83,10 @@ def run(urls: list, strategies: list = None) -> list:
     if strategies is None:
         strategies = ["mobile", "desktop"]
 
-    full_urls = [u if u.startswith("http") else SITE_URL + u for u in urls]
+    base = get_site_url()
+    if not base and any(not u.startswith("http") for u in urls):
+        raise RuntimeError("Configure a URL do site antes de auditar PageSpeed.")
+    full_urls = [u if u.startswith("http") else base + u for u in urls]
     results   = []
 
     try:

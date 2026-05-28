@@ -1,7 +1,13 @@
 from modules import blog_ideas
 
 
-def test_blog_ideas_generates_best_product_brand_title():
+def _configure_blog_terms(monkeypatch):
+    monkeypatch.setattr("modules.blog_ideas.get_brand_aliases", lambda: {"lacoste": ["lacoste"]})
+    monkeypatch.setattr("modules.blog_ideas.get_product_terms", lambda: {"moletom", "tenis"})
+
+
+def test_blog_ideas_generates_best_product_brand_title(monkeypatch):
+    _configure_blog_terms(monkeypatch)
     result = blog_ideas.suggest_from_gsc({
         "top_queries": [
             {
@@ -21,6 +27,7 @@ def test_blog_ideas_generates_best_product_brand_title():
 
 
 def test_blog_ideas_ai_enrichment_merges_brief(monkeypatch):
+    _configure_blog_terms(monkeypatch)
     def fake_call_json(**kwargs):
         return {
             "_ai_enhanced": True,
@@ -46,6 +53,7 @@ def test_blog_ideas_ai_enrichment_merges_brief(monkeypatch):
 
 
 def test_blog_ideas_batch_ai_enrichment_keeps_titles_distinct(monkeypatch):
+    _configure_blog_terms(monkeypatch)
     import json
 
     def fake_call_json(**kwargs):

@@ -4,7 +4,7 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 
-from config import PRIORITY_PAGES, REQUEST_TIMEOUT, USER_AGENT, get_site_url
+from config import REQUEST_TIMEOUT, USER_AGENT, get_priority_pages, get_site_url
 from modules.crawler import get_page, normalize_url
 
 
@@ -76,7 +76,7 @@ def analyze(crawl_data: dict | None = None, priority_pages: list | None = None) 
     sitemap_urls = set(sitemap["urls"])
     robots = sitemap["robots"]
     disallows = robots.get("disallows", [])
-    priority = priority_pages or PRIORITY_PAGES
+    priority = priority_pages if priority_pages is not None else get_priority_pages()
 
     missing_priority = []
     blocked_priority = []

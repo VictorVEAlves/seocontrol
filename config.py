@@ -103,13 +103,15 @@ def get_default_provider() -> tuple:
             return name, key
     return "", ""
 
-# ── Login Bagy ────────────────────────────────────────────────────────────────
+# ── Optional publisher credentials ────────────────────────────────────────────
 BAGY_EMAIL    = os.environ.get("BAGY_EMAIL", "")
 BAGY_PASSWORD = os.environ.get("BAGY_PASSWORD", "")
 
-SITE_URL = "https://www.secretoutlet.com.br"
+# Public installs must not assume a client/site. Configure this in the dashboard
+# settings screen or through SITE_URL in .env.
+SITE_URL = os.environ.get("SITE_URL", "").rstrip("/")
 
-# ── Dynamic site configuration (overrides the hardcoded SITE_URL above) ─────────
+# ── Dynamic site configuration ────────────────────────────────────────────────
 _SITE_CONFIG_FILE = BASE_DIR / ".site_config.json"
 
 
@@ -124,7 +126,7 @@ def _load_site_config() -> dict:
 
 
 def get_site_url() -> str:
-    """Return the configured site URL, falling back to SITE_URL."""
+    """Return the configured site URL. Empty means the user has not configured a client yet."""
     cfg = _load_site_config()
     url = cfg.get("site_url") or os.environ.get("SITE_URL") or SITE_URL
     return url.rstrip("/")
@@ -135,16 +137,22 @@ def get_gsc_property() -> str:
     cfg = _load_site_config()
     prop = (cfg.get("gsc_property")
             or os.environ.get("GSC_PROPERTY_URL")
-            or (get_site_url() + "/"))
+            or ((get_site_url() + "/") if get_site_url() else ""))
+    if not prop:
+        return ""
     return prop if prop.endswith("/") else prop + "/"
 
 
 def get_site_name() -> str:
     """Short display name extracted from the configured site URL."""
     from urllib.parse import urlparse as _up
+    cfg = _load_site_config()
+    if cfg.get("site_name"):
+        return str(cfg["site_name"]).strip()
     host = _up(get_site_url()).netloc or get_site_url()
     # Strip www. prefix for display
-    return host[4:] if host.startswith("www.") else host
+    name = host[4:] if host.startswith("www.") else host
+    return name or "Site não configurado"
 
 
 def save_site_config(**kwargs) -> None:
@@ -159,195 +167,151 @@ def save_site_config(**kwargs) -> None:
     )
 
 
-# ── Brand tiers ────────────────────────────────────────────────────────────────
-# top: highest commercial priority — full cluster monitoring
-# good: important brands — pillar + main categories monitored
-BRAND_TIERS = {
-    "top":  ["tommy_hilfiger", "tommy_jeans", "lacoste", "calvin_klein"],
-    "good": ["aramis", "reserva", "john_john", "levis", "dudalina",
-             "armani_exchange", "emporio_armani", "columbia"],
+# ── Client-controlled SEO scope ───────────────────────────────────────────────
+# These constants intentionally start empty. Public users configure their own
+# URLs, brands and market terms in /settings or .site_config.json.
+PRIORITY_PAGES: list[str] = []
+BRAND_TIERS = {"top": [], "good": []}
+BRAND_CLUSTERS: dict = {}
+
+DEFAULT_PRODUCT_TERMS = {
+    "produto", "produtos", "categoria", "categorias", "servico", "serviço",
+    "servicos", "serviços", "preco", "preço", "comprar", "loja", "oferta",
+}
+DEFAULT_COMMERCIAL_TERMS = {
+    "comprar", "preco", "preço", "promocao", "promoção", "oferta", "desconto",
+    "cupom", "loja", "online", "barato", "melhor", "comparar",
 }
 
-# ── Priority pages (derived from BRAND_CLUSTERS below) ────────────────────────
-# Top Marcas — full subcategory coverage
-_TOP_PAGES = [
-    # Tommy Hilfiger
-    "/tommy-hilfiger",
-    "/tenis-tommy-hilfiger",
-    "/camisas-sociais-tommy-hilfiger",
-    "/camisetas-tommy-hilfiger",
-    "/bones-tommy-hilfiger",
-    "/blusas-jaquetas-e-moletons-tommy-hilfiger",
-    "/calcas-tommy-hilfiger",
-    "/bermudas-tommy-hilfiger",
-    "/carteiras-tommy-hilfiger",
-    "/chinelos-tommy-hilfiger",
-    # Tommy Jeans
-    "/tommy-jeans",
-    # Lacoste
-    "/lacoste",
-    "/tenis-lacoste",
-    "/polos-lacoste",
-    "/camisetas-lacoste",
-    "/bones-lacoste",
-    "/blusas-jaquetas-e-moletons-lacoste",
-    "/camisas-sociais-lacoste",
-    "/calcas-lacoste",
-    "/bermudas-lacoste",
-    # Calvin Klein
-    "/calvin-klein",
-    "/tenis-calvin-klein",
-    "/blusas-jaquetas-e-moletons-calvin-klein",
-]
 
-# Good Marcas — pillar + main categories
-_GOOD_PAGES = [
-    # Aramis
-    "/aramis",
-    # Reserva
-    "/reserva",
-    "/tenis-reserva",
-    "/polos-reserva",
-    "/camisas-sociais-reserva",
-    "/camisetas-reserva",
-    "/blusas-jaquetas-e-moletons-reserva",
-    "/chinelos-reserva",
-    # John John
-    "/john-john",
-    # Levis
-    "/levis",
-    "/calcas-levis",
-    "/camisetas-levis",
-    # Dudalina
-    "/dudalina",
-    "/camisas-sociais-dudalina",
-    # Armani Exchange
-    "/armani-exchange",
-    # Emporio Armani
-    "/marca-emporio-armani",
-    # Columbia
-    "/columbia",
-    "/blusas-jaquetas-e-moletons-columbia",
-]
+def _split_lines(value) -> list[str]:
+    if isinstance(value, list):
+        raw = value
+    else:
+        raw = str(value or "").replace(",", "\n").splitlines()
+    return [str(item).strip() for item in raw if str(item).strip()]
 
-# High-traffic pages that must always be monitored regardless of tier
-_HIGH_TRAFFIC_PAGES = [
-    "/diesel",           # 211k impressões
-    "/osklen",           # 157k impressões
-    "/colcci",           # 39k impressões
-    "/sergio-k",         # 43k impressões
-    "/polo-ralph-lauren",
-    "/crocs",
-    "/guia-de-tamanhos", # 334k impressões — maior página do site
-]
 
-PRIORITY_PAGES = _TOP_PAGES + _GOOD_PAGES + _HIGH_TRAFFIC_PAGES
+def _normalize_path(value: str) -> str:
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    if value.startswith("http"):
+        from urllib.parse import urlparse as _up
+        parsed = _up(value)
+        value = parsed.path or "/"
+    if not value.startswith("/"):
+        value = "/" + value
+    return value.rstrip("/") or "/"
 
-BRAND_CLUSTERS = {
-    # ── Top Marcas ────────────────────────────────────────────────────────────
-    "tommy_hilfiger": {
-        "tier": "top",
-        "pillar": "/tommy-hilfiger",
-        "pages": [
-            "/tenis-tommy-hilfiger",
-            "/camisas-sociais-tommy-hilfiger",
-            "/camisetas-tommy-hilfiger",
-            "/bones-tommy-hilfiger",
-            "/blusas-jaquetas-e-moletons-tommy-hilfiger",
-            "/calcas-tommy-hilfiger",
-            "/bermudas-tommy-hilfiger",
-            "/carteiras-tommy-hilfiger",
-            "/chinelos-tommy-hilfiger",
-        ],
-        "blog": ["/estilos-de-camisas-tommy-hilfiger"],
-    },
-    "tommy_jeans": {
-        "tier": "top",
-        "pillar": "/tommy-jeans",
-        "pages": [],
-        "blog": [],
-    },
-    "lacoste": {
-        "tier": "top",
-        "pillar": "/lacoste",
-        "pages": [
-            "/tenis-lacoste",
-            "/polos-lacoste",
-            "/camisetas-lacoste",
-            "/bones-lacoste",
-            "/blusas-jaquetas-e-moletons-lacoste",
-            "/camisas-sociais-lacoste",
-            "/calcas-lacoste",
-            "/bermudas-lacoste",
-        ],
-        "blog": ["/melhores-tenis-lacoste"],
-    },
-    "calvin_klein": {
-        "tier": "top",
-        "pillar": "/calvin-klein",
-        "pages": [
-            "/tenis-calvin-klein",
-            "/blusas-jaquetas-e-moletons-calvin-klein",
-        ],
-        "blog": [],
-    },
-    # ── Good Marcas ───────────────────────────────────────────────────────────
-    "aramis": {
-        "tier": "good",
-        "pillar": "/aramis",
-        "pages": [],
-        "blog": [],
-    },
-    "reserva": {
-        "tier": "good",
-        "pillar": "/reserva",
-        "pages": [
-            "/tenis-reserva",
-            "/polos-reserva",
-            "/camisas-sociais-reserva",
-            "/camisetas-reserva",
-            "/blusas-jaquetas-e-moletons-reserva",
-            "/chinelos-reserva",
-        ],
-        "blog": [],
-    },
-    "john_john": {
-        "tier": "good",
-        "pillar": "/john-john",
-        "pages": [],
-        "blog": [],
-    },
-    "levis": {
-        "tier": "good",
-        "pillar": "/levis",
-        "pages": ["/calcas-levis", "/camisetas-levis"],
-        "blog": ["/levis-501-511-512-514-517-diferenca"],
-    },
-    "dudalina": {
-        "tier": "good",
-        "pillar": "/dudalina",
-        "pages": ["/camisas-sociais-dudalina"],
-        "blog": [],
-    },
-    "armani_exchange": {
-        "tier": "good",
-        "pillar": "/armani-exchange",
-        "pages": [],
-        "blog": [],
-    },
-    "emporio_armani": {
-        "tier": "good",
-        "pillar": "/marca-emporio-armani",
-        "pages": [],
-        "blog": [],
-    },
-    "columbia": {
-        "tier": "good",
-        "pillar": "/columbia",
-        "pages": ["/blusas-jaquetas-e-moletons-columbia"],
-        "blog": ["/melhores-jaquetas-columbia-masculinas"],
-    },
-}
+
+def get_business_context() -> str:
+    cfg = _load_site_config()
+    return str(
+        cfg.get("business_context")
+        or os.environ.get("BUSINESS_CONTEXT")
+        or "Negócio digital configurado pelo cliente."
+    ).strip()
+
+
+def get_content_guidelines() -> str:
+    cfg = _load_site_config()
+    return str(
+        cfg.get("content_guidelines")
+        or os.environ.get("CONTENT_GUIDELINES")
+        or "Use tom consultivo, linguagem clara em PT-BR e recomendações acionáveis."
+    ).strip()
+
+
+def get_priority_pages() -> list:
+    cfg = _load_site_config()
+    pages = cfg.get("priority_pages")
+    if pages is None:
+        pages = os.environ.get("PRIORITY_PAGES", "")
+    result = []
+    seen = set()
+    for page in _split_lines(pages):
+        normalized = _normalize_path(page)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            result.append(normalized)
+    return result
+
+
+def _parse_brand_aliases(value) -> dict[str, list[str]]:
+    if isinstance(value, dict):
+        return {
+            str(brand).strip().lower(): [str(alias).strip().lower() for alias in aliases if str(alias).strip()]
+            for brand, aliases in value.items()
+            if str(brand).strip()
+        }
+    aliases: dict[str, list[str]] = {}
+    for line in str(value or "").splitlines():
+        if not line.strip():
+            continue
+        if ":" in line:
+            brand, raw_aliases = line.split(":", 1)
+            items = [brand.strip(), *[item.strip() for item in raw_aliases.split(",")]]
+        else:
+            brand = line.strip()
+            items = [brand]
+        key = brand.strip().lower()
+        values = []
+        for item in items:
+            item = item.strip().lower()
+            if item and item not in values:
+                values.append(item)
+        if key and values:
+            aliases[key] = values
+    return aliases
+
+
+def get_brand_aliases() -> dict[str, list[str]]:
+    cfg = _load_site_config()
+    return _parse_brand_aliases(cfg.get("brand_aliases") or os.environ.get("BRAND_ALIASES", ""))
+
+
+def get_product_terms() -> set[str]:
+    cfg = _load_site_config()
+    terms = _split_lines(cfg.get("product_terms") or os.environ.get("PRODUCT_TERMS", ""))
+    return {term.lower() for term in terms} or set(DEFAULT_PRODUCT_TERMS)
+
+
+def get_commercial_terms() -> set[str]:
+    cfg = _load_site_config()
+    terms = _split_lines(cfg.get("commercial_terms") or os.environ.get("COMMERCIAL_TERMS", ""))
+    return {term.lower() for term in terms} or set(DEFAULT_COMMERCIAL_TERMS)
+
+
+def get_brand_clusters() -> dict:
+    cfg = _load_site_config()
+    clusters = cfg.get("brand_clusters")
+    if isinstance(clusters, dict):
+        return clusters
+
+    aliases = get_brand_aliases()
+    pages = get_priority_pages()
+    derived = {}
+    for brand, names in aliases.items():
+        tokens = {
+            alias.strip().lower().replace(" ", "-")
+            for alias in [brand, *names]
+            if alias.strip()
+        }
+        matches = [
+            page for page in pages
+            if any(token and token in page.strip("/").lower() for token in tokens)
+        ]
+        if not matches:
+            continue
+        pillar = min(matches, key=lambda page: (page.count("/"), len(page)))
+        derived[brand.replace(" ", "_")] = {
+            "tier": "configured",
+            "pillar": pillar,
+            "pages": [page for page in matches if page != pillar],
+            "blog": [],
+        }
+    return derived
 
 # PageSpeed Insights API key (opcional — sem chave funciona mas com rate limit menor)
 # Obtenha grátis em: https://developers.google.com/speed/docs/insights/v5/get-started
@@ -365,17 +329,3 @@ MAX_CRAWL_PAGES = 1000
 CRAWL_DELAY = 1.0  # segundos entre requisições
 REQUEST_TIMEOUT = 15
 USER_AGENT = "Mozilla/5.0 (compatible; SEOAudit/1.0)"
-
-
-def get_brand_clusters() -> dict:
-    """Return BRAND_CLUSTERS only if the configured site matches the original."""
-    if get_site_url().rstrip("/") == SITE_URL.rstrip("/"):
-        return BRAND_CLUSTERS
-    return {}
-
-
-def get_priority_pages() -> list:
-    """Return PRIORITY_PAGES only if the configured site matches the original."""
-    if get_site_url().rstrip("/") == SITE_URL.rstrip("/"):
-        return PRIORITY_PAGES
-    return []

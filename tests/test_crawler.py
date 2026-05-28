@@ -1,12 +1,14 @@
 from collectors.crawler import is_internal, normalize_url, should_skip
 
 
-def test_normalize_url_removes_query_fragment_and_trailing_slash():
+def test_normalize_url_removes_query_fragment_and_trailing_slash(monkeypatch):
+    monkeypatch.setattr("modules.crawler.get_site_url", lambda: "https://www.secretoutlet.com.br")
     url = normalize_url("/lacoste/?utm_source=x#products")
     assert url == "https://www.secretoutlet.com.br/lacoste"
 
 
-def test_internal_and_skip_rules():
+def test_internal_and_skip_rules(monkeypatch):
+    monkeypatch.setattr("modules.crawler.get_site_url", lambda: "https://www.secretoutlet.com.br")
     assert is_internal("/lacoste")
     assert is_internal("https://www.secretoutlet.com.br/lacoste")
     assert not is_internal("https://example.com/lacoste")

@@ -27,7 +27,7 @@ from typing import Any
 
 import requests
 
-from config import BASE_DIR, BRAND_CLUSTERS, BRAND_TIERS, SITE_URL
+from config import BASE_DIR, get_brand_clusters, get_business_context, get_site_url
 
 INSIGHTS_FILE = BASE_DIR / "reports" / "ai_insights_latest.json"
 
@@ -104,7 +104,7 @@ def _parse_json_safe(raw: str) -> dict:
 
 def _fmt_page(p: dict) -> dict:
     return {
-        "url": str(p.get("page") or p.get("url") or "").replace(SITE_URL, ""),
+        "url": str(p.get("page") or p.get("url") or "").replace(get_site_url(), ""),
         "clicks": int(p.get("clicks") or 0),
         "impr": int(p.get("impressions") or 0),
         "ctr": f"{float(p.get('ctr') or 0):.2f}%",
@@ -132,7 +132,7 @@ def compact_audit(results: dict) -> dict:
     # On-page issues (grade C, D, F) — from onpage module if available
     bad_onpage = [
         {
-            "url": str(p.get("url") or "").replace(SITE_URL, ""),
+            "url": str(p.get("url") or "").replace(get_site_url(), ""),
             "grade": p.get("grade"),
             "issues": p.get("issues", [])[:4],
         }
@@ -174,7 +174,7 @@ def compact_audit(results: dict) -> dict:
         # Top drops (by _score, already sorted) for the prompt
         top_drops = [
             {
-                "url":               d["page"].replace(SITE_URL, ""),
+                "url":               d["page"].replace(get_site_url(), ""),
                 "brand":             d.get("brand"),
                 "tier":              d.get("tier"),
                 "severity":          d.get("severity"),
@@ -189,7 +189,7 @@ def compact_audit(results: dict) -> dict:
         # Current page metadata (title/H1/desc) for pages already audited
         page_tags = [
             {
-                "url":         pc.get("url", "").replace(SITE_URL, ""),
+                "url":         pc.get("url", "").replace(get_site_url(), ""),
                 "title":       pc.get("title", ""),
                 "h1":          pc.get("h1", ""),
                 "description": (pc.get("description") or "")[:120],
@@ -206,9 +206,9 @@ def compact_audit(results: dict) -> dict:
         ]
 
         return {
-            "site":              SITE_URL,
+            "site":              get_site_url(),
             "data_source":       "gsc_api",
-            "brand_tiers":       BRAND_TIERS,
+            "brand_tiers":       {},
             "period_current":    gsc_api.get("period_current", ""),
             "period_previous":   gsc_api.get("period_previous", ""),
             "comparison":        gsc_api.get("comparison_label", ""),
@@ -240,8 +240,8 @@ def compact_audit(results: dict) -> dict:
         key=lambda x: float(x.get("position") or 99),
     )[:10]
     brand_health_csv: dict[str, dict] = {}
-    page_map = {str(p.get("page") or "").replace(SITE_URL, ""): p for p in top_pages}
-    for brand, cluster in BRAND_CLUSTERS.items():
+    page_map = {str(p.get("page") or "").replace(get_site_url(), ""): p for p in top_pages}
+    for brand, cluster in get_brand_clusters().items():
         pillar = cluster["pillar"]
         p = page_map.get(pillar)
         if p:
@@ -255,9 +255,9 @@ def compact_audit(results: dict) -> dict:
             }
     benchmarks = gsc_csv.get("benchmarks", {})
     return {
-        "site":        SITE_URL,
+        "site":        get_site_url(),
         "data_source": "gsc_csv",
-        "brand_tiers": BRAND_TIERS,
+        "brand_tiers": {},
         "benchmarks": {
             "avg_ctr":      f"{benchmarks.get('avg_ctr', 0):.2f}%",
             "avg_position": round(benchmarks.get("avg_position", 0), 1),
@@ -274,18 +274,17 @@ def compact_audit(results: dict) -> dict:
 
 # ── Prompt builder ────────────────────────────────────────────────────────────
 
-_SYSTEM_CTX = """Você é um especialista sênior em SEO técnico e estratégico para e-commerce de moda masculina premium no Brasil.
+def _system_ctx() -> str:
+    return f"""Você é um especialista sênior em SEO técnico e estratégico.
 
-Site: secretoutlet.com.br — outlet oficial e revendedor autorizado de marcas premium
-(Tommy Hilfiger, Tommy Jeans, Lacoste, Calvin Klein — Top Marcas)
-(Aramis, Reserva, John John, Levi's, Dudalina, Armani Exchange, Empório Armani, Columbia — Good Marcas)
+Site: {get_site_url() or "site configurado pelo cliente"}
+Contexto do negócio: {get_business_context()}
 
-Contexto do negócio:
-- E-commerce focado em outlet (desconto) de marcas premium masculinas
-- Diferencial: revendedor autorizado, produto original com desconto
-- Usuários buscam marcas específicas + produto (ex: "tênis lacoste masculino")
-- CTR muito abaixo do mercado indica problema sistêmico de snippets
-- Marcas Top têm prioridade máxima de otimização"""
+Regras:
+- Use apenas dados fornecidos na auditoria.
+- Priorize páginas, marcas, entidades ou serviços configurados pelo cliente.
+- Diferencie problema técnico, oportunidade de conteúdo e oportunidade comercial.
+- CTR muito abaixo do benchmark indica possível problema de snippet, intenção ou desalinhamento de página."""
 
 
 def build_prompt(compact: dict) -> str:
@@ -301,7 +300,7 @@ def build_prompt(compact: dict) -> str:
         else "Os dados vêm de exports CSV do GSC."
     )
 
-    return f"""{_SYSTEM_CTX}
+    return f"""{_system_ctx()}
 
 ---
 
@@ -314,7 +313,7 @@ DADOS DA AUDITORIA SEO:
 
 Analise os dados com profundidade e retorne APENAS um JSON válido com a estrutura abaixo.
 Seja específico: use URLs reais, números reais, evite generalismos.
-Priorize marcas tier="top" antes de "good".
+Priorize entidades/páginas configuradas como importantes quando existirem.
 Se a fonte for gsc_api, use as quedas e variações netas — não invente dados que não estão nos dados.
 
 {{

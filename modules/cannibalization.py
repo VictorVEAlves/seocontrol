@@ -1,9 +1,8 @@
 """
-Keyword Cannibalization Detector — secretoutlet.com.br
+Keyword Cannibalization Detector
 
 Uses the GSC API to find keywords where multiple pages compete for the same
-query. This is common in brand stores: /lacoste, /tenis-lacoste and
-/polos-lacoste may all rank for "lacoste", splitting impressions and clicks.
+query.
 
 Strategy:
   1. Fetch top queries (by impressions) with page breakdown
@@ -19,24 +18,23 @@ from collections import defaultdict
 from datetime import date, timedelta
 from urllib.parse import quote, urlparse
 
-from config import BASE_DIR, BRAND_CLUSTERS, SITE_URL, disable_broken_local_proxy
+from config import BASE_DIR, disable_broken_local_proxy, get_brand_clusters, get_gsc_property
 
 disable_broken_local_proxy()
 
-_GSC_PROPERTY     = os.environ.get("GSC_PROPERTY_URL", SITE_URL + "/")
 _CREDENTIALS_FILE = BASE_DIR / "gsc_credentials.json"
 _TOKEN_FILE       = BASE_DIR / ".gsc_token.json"
 _SCOPES           = ["https://www.googleapis.com/auth/webmasters.readonly"]
 
 _GSC_QUERY_URL = (
     "https://searchconsole.googleapis.com/webmasters/v3/sites/"
-    + quote(_GSC_PROPERTY, safe="")
+    + quote(get_gsc_property(), safe="")
     + "/searchAnalytics/query"
 )
 
 # Brand page index for classification
 _BRAND_PAGE_INDEX: dict[str, dict] = {}
-for _brand, _cluster in BRAND_CLUSTERS.items():
+for _brand, _cluster in get_brand_clusters().items():
     _tier = _cluster.get("tier", "")
     for _p in [_cluster["pillar"]] + _cluster.get("pages", []) + _cluster.get("blog", []):
         if _p:

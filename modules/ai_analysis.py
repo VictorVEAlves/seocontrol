@@ -7,12 +7,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from config import BASE_DIR
+from config import BASE_DIR, get_business_context, get_site_name, get_site_url
 from modules.ai_layer import call_json
 
 AI_ANALYSIS_FILE = BASE_DIR / "reports" / "ai_analysis_latest.json"
 
-AI_ANALYSIS_SYSTEM = """Voce e um diretor de SEO tecnico e estrategico para e-commerce de moda masculina premium no Brasil.
+AI_ANALYSIS_SYSTEM = """Voce e um diretor de SEO tecnico e estrategico.
 
 Sua tarefa e ler um resumo estruturado de auditoria SEO e devolver uma analise executiva acionavel.
 
@@ -43,6 +43,11 @@ def compact_results(results: dict[str, Any]) -> dict[str, Any]:
     gsc = results.get("gsc", {}) or {}
     compact = {
         "generated_at": datetime.now().isoformat(),
+        "site": {
+            "name": get_site_name(),
+            "url": get_site_url(),
+            "business_context": get_business_context(),
+        },
         "scope": results.get("_urls", []),
         "gsc": {
             "top_queries": _take(gsc.get("top_queries"), 12),

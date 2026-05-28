@@ -1,9 +1,12 @@
-from config import SITE_URL
+from config import get_site_url
 from modules.crawler import get_page
 
 
 def audit_category(url: str) -> dict:
-    full_url = url if url.startswith("http") else SITE_URL + url
+    base = get_site_url()
+    if not base and not url.startswith("http"):
+        raise RuntimeError("Configure a URL do site antes de auditar categorias/produtos.")
+    full_url = url if url.startswith("http") else base + url
     status, soup, _, final_url = get_page(full_url)
     result = {
         "url": full_url,

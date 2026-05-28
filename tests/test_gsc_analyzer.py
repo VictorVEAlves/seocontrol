@@ -3,7 +3,14 @@ import pandas as pd
 from collectors import gsc
 
 
-def test_gsc_loads_and_normalizes_export_folder(tmp_path):
+def _configure_terms(monkeypatch):
+    monkeypatch.setattr("modules.gsc_analyzer.get_brand_aliases", lambda: {"lacoste": ["lacoste"]})
+    monkeypatch.setattr("modules.gsc_analyzer.get_product_terms", lambda: {"tenis"})
+    monkeypatch.setattr("modules.gsc_analyzer.get_commercial_terms", lambda: {"comprar", "preco"})
+
+
+def test_gsc_loads_and_normalizes_export_folder(tmp_path, monkeypatch):
+    _configure_terms(monkeypatch)
     pd.DataFrame([
         {
             "Query": "tenis lacoste",
@@ -26,7 +33,8 @@ def test_gsc_loads_and_normalizes_export_folder(tmp_path):
     assert result["benchmarks"]["avg_position_target"] == 6.0
 
 
-def test_pure_brand_queries_are_not_ctr_tasks(tmp_path):
+def test_pure_brand_queries_are_not_ctr_tasks(tmp_path, monkeypatch):
+    _configure_terms(monkeypatch)
     pd.DataFrame([
         {
             "Query": "lacoste",

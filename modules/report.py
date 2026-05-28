@@ -3,6 +3,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
+from config import get_site_name, get_site_url
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -177,7 +178,7 @@ def _build_onpage_section(onpage: list) -> str:
 
     rows = []
     for p in sorted(onpage, key=lambda x: x.get("score", 100)):
-        url = p.get("url", "").replace("https://www.secretoutlet.com.br", "")
+        url = p.get("url", "").replace(get_site_url(), "")
         issues_html = ""
         for iss in p.get("issues", []):
             issues_html += f'<span class="tag tag-red">{iss[:60]}</span> '
@@ -358,7 +359,7 @@ def _build_pagespeed_section(ps: list) -> str:
     for r in sorted(ps, key=lambda x: (x.get("performance_score") or 100)):
         if "error" in r:
             continue
-        url = r["url"].replace("https://www.secretoutlet.com.br", "")
+        url = r["url"].replace(get_site_url(), "")
         issues = " ".join(f'<span class="tag tag-red">{i}</span>' for i in r.get("issues", []))
         rows.append([
             f'<a href="{r["url"]}" target="_blank">{url[:45]}</a>',
@@ -405,7 +406,7 @@ def generate(results: dict, output_path: str = None) -> str:
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SEO Audit — Secret Outlet — {now}</title>
+<title>SEO Audit — {get_site_name()} — {now}</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://d3js.org/d3.v7.min.js"></script>
 <style>
@@ -505,7 +506,7 @@ def generate(results: dict, output_path: str = None) -> str:
 <aside class="sidebar">
   <div class="sidebar-logo">
     <h1>SEO Audit</h1>
-    <p>Secret Outlet · {now}</p>
+    <p>{get_site_name()} · {now}</p>
   </div>
   <nav>
     <a href="#gsc">📊 GSC Analysis <span class="nav-badge">{gsc_issues}</span></a>
@@ -520,7 +521,7 @@ def generate(results: dict, output_path: str = None) -> str:
 <!-- Main -->
 <main class="main">
   <div class="page-header">
-    <h1>Relatório SEO — secretoutlet.com.br</h1>
+    <h1>Relatório SEO — {get_site_name()}</h1>
     <p>Gerado em {now}</p>
   </div>
 

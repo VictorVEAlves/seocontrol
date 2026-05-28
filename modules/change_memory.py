@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
-from config import BASE_DIR, SITE_URL
+from config import BASE_DIR
 
 
 DEFAULT_CHANGELOG_CANDIDATES = [

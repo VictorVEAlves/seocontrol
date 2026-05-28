@@ -63,6 +63,7 @@ def test_full_audit_report_counts_warnings_as_onpage_findings(monkeypatch):
 
 
 def test_full_audit_screen_exposes_page_scope_and_time_estimates(monkeypatch):
+    monkeypatch.setattr(dashboard, "get_site_url", lambda: "https://example.com")
     monkeypatch.setattr(config, "get_priority_pages", lambda: ["/marca", "/produto"])
 
     html = dashboard.app.test_client().get("/full-audit?new=1").get_data(as_text=True)
@@ -94,6 +95,7 @@ def test_select_full_audit_pages_prefers_priority_pages_then_sitemap(monkeypatch
 
 def test_full_audit_start_passes_selected_scope_to_worker(monkeypatch):
     created = []
+    monkeypatch.setattr(dashboard, "get_site_url", lambda: "https://example.com")
 
     class FakeThread:
         def __init__(self, target, args, daemon):

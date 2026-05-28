@@ -2041,7 +2041,7 @@ TOOL_GROUPS = [
             {
                 "key": "cannibalization",
                 "name": "Canibalização de Keywords",
-                "desc": "Detecta quando duas ou mais páginas competem pela mesma keyword no Google. Ex: /lacoste e /tenis-lacoste ambas aparecem para 'tênis lacoste'.",
+                "desc": "Detecta quando duas ou mais páginas competem pela mesma keyword no Google. Ex: /categoria e /subcategoria aparecem para a mesma busca.",
                 "icon": "⚔️",
                 "tags": [],
                 "badge": "API",
@@ -2255,7 +2255,7 @@ def tools():
     </div>
     <div class="field is-hidden" data-field="urls">
       <label>URLs de foco <span class="muted">(opcional)</span></label>
-      <input name="urls" value="{esc(values['urls'])}" placeholder="/lacoste /tenis-lacoste">
+      <input name="urls" value="{esc(values['urls'])}" placeholder="/categoria /produto-importante">
     </div>
     <div class="field is-hidden" data-field="comparison">
       <label>Período de comparação</label>
@@ -3365,11 +3365,15 @@ def _select_full_audit_pages(scope_key: str) -> tuple[list[str], dict]:
     from config import get_priority_pages
     from modules.crawler import normalize_url
 
+    site_url = get_site_url()
+    if not site_url:
+        raise RuntimeError("Configure a URL do site em Configurações antes de rodar a auditoria.")
+
     key, option = _audit_scope_config(scope_key)
     priority_pages = []
     seen = set()
     for page in get_priority_pages():
-        normalized = normalize_url(page, get_site_url())
+        normalized = normalize_url(page, site_url)
         if normalized not in seen:
             seen.add(normalized)
             priority_pages.append(normalized)
@@ -3391,7 +3395,7 @@ def _select_full_audit_pages(scope_key: str) -> tuple[list[str], dict]:
     selected = priority_pages[:]
     seen = set(selected)
     for page in sitemap_pages:
-        normalized = normalize_url(page, get_site_url())
+        normalized = normalize_url(page, site_url)
         if normalized not in seen:
             seen.add(normalized)
             selected.append(normalized)
@@ -3570,6 +3574,21 @@ def full_audit():
         return redirect("/full-audit/report/last")
     from config import get_priority_pages
 
+    if not get_site_url():
+        body = """
+<div class="section-head">
+  <h1>Auditoria Completa</h1>
+</div>
+<div class="panel" style="max-width:720px;padding:24px">
+  <h2>Configure o cliente antes de auditar</h2>
+  <p style="font-size:14px;color:var(--muted);margin-bottom:18px">
+    Para uso público, o sistema não assume mais nenhum domínio padrão.
+    Informe a URL do site, páginas prioritárias e contexto do negócio em Configurações.
+  </p>
+  <a href="/settings" class="btn btn-primary">Abrir Configurações</a>
+</div>"""
+        return page_shell("Auditoria Completa", _AUDIT_CSS + body)
+
     priority_count = len(list(dict.fromkeys(get_priority_pages())))
     quick_label = (
         f"Rápida - {priority_count} páginas prioritárias"
@@ -3710,6 +3729,8 @@ function handleStep(ev) {
 
 @app.route("/full-audit/start", methods=["POST"])
 def full_audit_start():
+    if not get_site_url():
+        return jsonify({"error": "Configure a URL do site antes de iniciar a auditoria."}), 400
     payload = request.get_json(silent=True) or {}
     scope_key, _scope_info = _audit_scope_config(payload.get("page_scope"))
     job_id = uuid.uuid4().hex
@@ -4310,8 +4331,15 @@ def settings():
 
         if action == "site":
             site_url     = request.form.get("site_url", "").strip().rstrip("/")
+            site_name    = request.form.get("site_name", "").strip()
             gsc_property = request.form.get("gsc_property", "").strip()
             cred_file    = request.files.get("gsc_credentials")
+            business_context = request.form.get("business_context", "").strip()
+            content_guidelines = request.form.get("content_guidelines", "").strip()
+            priority_pages = _split_urls(request.form.get("priority_pages", ""))
+            brand_aliases = request.form.get("brand_aliases", "").strip()
+            product_terms = _split_urls(request.form.get("product_terms", ""))
+            commercial_terms = _split_urls(request.form.get("commercial_terms", ""))
 
             if site_url and not site_url.startswith("http"):
                 site_url = "https://" + site_url
@@ -4320,7 +4348,17 @@ def settings():
             if gsc_property in ("/", ""):
                 gsc_property = None
 
-            save_site_config(site_url=site_url or None, gsc_property=gsc_property)
+            save_site_config(
+                site_url=site_url,
+                site_name=site_name,
+                gsc_property=gsc_property or "",
+                business_context=business_context,
+                content_guidelines=content_guidelines,
+                priority_pages=priority_pages,
+                brand_aliases=brand_aliases,
+                product_terms=product_terms,
+                commercial_terms=commercial_terms,
+            )
 
             if cred_file and cred_file.filename:
                 (BASE_DIR / "gsc_credentials.json").write_bytes(cred_file.read())
@@ -4371,6 +4409,13 @@ def settings():
     cfg              = _load_site_config()
     available_sites  = cfg.get("available_gsc_sites") or []
     gsc_account      = cfg.get("gsc_account_email", "")
+    current_site_name = cfg.get("site_name", "")
+    current_context = cfg.get("business_context", "")
+    current_guidelines = cfg.get("content_guidelines", "")
+    current_priority_pages = "\n".join(cfg.get("priority_pages") or [])
+    current_brand_aliases = cfg.get("brand_aliases", "")
+    current_product_terms = ", ".join(cfg.get("product_terms") or [])
+    current_commercial_terms = ", ".join(cfg.get("commercial_terms") or [])
 
     # Current API key statuses (masked)
     api_keys = {
@@ -4526,11 +4571,64 @@ def settings():
       <div style="display:flex;flex-direction:column;gap:14px;margin-bottom:22px">
         <div>
           <label style="display:block;font-size:12px;font-weight:700;color:var(--muted);
+                         margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">Nome do Cliente/Site</label>
+          <input name="site_name" type="text" value="{esc(current_site_name)}"
+            placeholder="Ex: Minha Loja"
+            style="width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:6px;font-size:14px;color:var(--ink)"/>
+          <p style="font-size:11px;color:var(--muted);margin-top:4px">Nome exibido nos relatórios e usado pela IA como contexto.</p>
+        </div>
+        <div>
+          <label style="display:block;font-size:12px;font-weight:700;color:var(--muted);
                          margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">URL do Site</label>
           <input name="site_url" type="url" value="{esc(current_url)}"
             placeholder="https://www.seusite.com.br"
             style="width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:6px;font-size:14px;color:var(--ink)"/>
           <p style="font-size:11px;color:var(--muted);margin-top:4px">URL raiz do site a auditar, sem barra no final.</p>
+        </div>
+        <div>
+          <label style="display:block;font-size:12px;font-weight:700;color:var(--muted);
+                         margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">Contexto do negócio</label>
+          <textarea name="business_context" rows="3"
+            placeholder="Ex: E-commerce de moda feminina, SaaS B2B, clínica local, marketplace..."
+            style="width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:6px;font-size:14px;color:var(--ink);resize:vertical">{esc(current_context)}</textarea>
+          <p style="font-size:11px;color:var(--muted);margin-top:4px">Ajuda a IA e os relatórios a interpretarem oportunidades sem depender de um nicho fixo.</p>
+        </div>
+        <div>
+          <label style="display:block;font-size:12px;font-weight:700;color:var(--muted);
+                         margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">Diretrizes de conteúdo</label>
+          <textarea name="content_guidelines" rows="3"
+            placeholder="Ex: tom consultivo, evitar promessas médicas, destacar frete grátis, usar PT-BR..."
+            style="width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:6px;font-size:14px;color:var(--ink);resize:vertical">{esc(current_guidelines)}</textarea>
+        </div>
+        <div>
+          <label style="display:block;font-size:12px;font-weight:700;color:var(--muted);
+                         margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">Páginas prioritárias</label>
+          <textarea name="priority_pages" rows="5"
+            placeholder="/categoria-principal&#10;/produto-importante&#10;/blog/guia-completo"
+            style="width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:6px;font-size:14px;color:var(--ink);resize:vertical">{esc(current_priority_pages)}</textarea>
+          <p style="font-size:11px;color:var(--muted);margin-top:4px">Uma URL por linha. Se ficar vazio, auditorias amplas usam apenas o sitemap.</p>
+        </div>
+        <div>
+          <label style="display:block;font-size:12px;font-weight:700;color:var(--muted);
+                         margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">Marcas, entidades ou linhas de negócio</label>
+          <textarea name="brand_aliases" rows="5"
+            placeholder="Marca Principal: marca principal, apelido da marca&#10;Produto X: produto x, solução x"
+            style="width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:6px;font-size:14px;color:var(--ink);resize:vertical">{esc(current_brand_aliases)}</textarea>
+          <p style="font-size:11px;color:var(--muted);margin-top:4px">Formato: <code>Nome: alias 1, alias 2</code>. Usado para classificar queries com os termos do cliente.</p>
+        </div>
+        <div>
+          <label style="display:block;font-size:12px;font-weight:700;color:var(--muted);
+                         margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">Termos de produto/serviço</label>
+          <input name="product_terms" type="text" value="{esc(current_product_terms)}"
+            placeholder="produto, categoria, serviço, assinatura, curso"
+            style="width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:6px;font-size:14px;color:var(--ink)"/>
+        </div>
+        <div>
+          <label style="display:block;font-size:12px;font-weight:700;color:var(--muted);
+                         margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">Termos comerciais</label>
+          <input name="commercial_terms" type="text" value="{esc(current_commercial_terms)}"
+            placeholder="comprar, preço, orçamento, desconto, promoção, avaliação"
+            style="width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:6px;font-size:14px;color:var(--ink)"/>
         </div>
       </div>
 

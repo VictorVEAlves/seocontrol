@@ -1,11 +1,11 @@
-from config import BRAND_CLUSTERS, SITE_URL
+from config import get_brand_clusters
 
 
 def run(internal_links: dict) -> dict:
     suggestions = []
     for cluster in internal_links.get("cluster_analysis", []):
         brand = cluster.get("brand")
-        config = BRAND_CLUSTERS.get(brand, {})
+        config = get_brand_clusters().get(brand, {})
         pillar = config.get("pillar") or cluster.get("pillar")
         for target in cluster.get("missing_from_pillar", []):
             suggestions.append({

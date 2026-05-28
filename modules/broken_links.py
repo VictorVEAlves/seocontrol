@@ -1,13 +1,16 @@
 from collections import defaultdict
 from urllib.parse import urlparse
 from modules.crawler import get_page, is_internal, normalize_url, extract_links, should_skip
-from config import SITE_URL, MAX_CRAWL_PAGES
+from config import MAX_CRAWL_PAGES, get_priority_pages, get_site_url
 
 
-def crawl(start_url: str = SITE_URL, max_pages: int = MAX_CRAWL_PAGES) -> dict:
+def crawl(start_url: str = None, max_pages: int = MAX_CRAWL_PAGES) -> dict:
     """
     BFS crawl of the site. Returns pages dict and incoming_links map.
     """
+    start_url = start_url or get_site_url()
+    if not start_url:
+        raise RuntimeError("Configure a URL do site antes de rastrear links.")
     visited = {}
     queue = [normalize_url(start_url)]
     incoming = defaultdict(list)
@@ -69,15 +72,16 @@ def find_broken(crawl_data: dict) -> list:
     pages    = crawl_data["pages"]
     incoming = crawl_data["incoming_links"]
     broken   = []
+    base     = get_site_url()
 
     for url, data in pages.items():
         if data["status"] == 0 or data["status"] >= 400:
             srcs = incoming.get(url, [])
             broken.append({
-                "url":          url.replace(SITE_URL, ""),
+                "url":          url.replace(base, ""),
                 "full_url":     url,
                 "status":       data["status"],
-                "linked_from":  [s["source"].replace(SITE_URL, "") for s in srcs[:5]],
+                "linked_from":  [s["source"].replace(base, "") for s in srcs[:5]],
                 "anchors":      [s["anchor"] for s in srcs[:5]],
                 "total_sources": len(srcs),
             })
@@ -88,15 +92,16 @@ def find_broken(crawl_data: dict) -> list:
 def find_redirect_chains(crawl_data: dict) -> list:
     pages  = crawl_data["pages"]
     chains = []
+    base   = get_site_url()
 
     for url, data in pages.items():
         if data["redirect"]:
             dest = normalize_url(data["final_url"])
             if dest in pages and pages[dest].get("redirect"):
                 chains.append({
-                    "start":        url.replace(SITE_URL, ""),
-                    "intermediate": dest.replace(SITE_URL, ""),
-                    "final":        pages[dest]["final_url"].replace(SITE_URL, ""),
+                    "start":        url.replace(base, ""),
+                    "intermediate": dest.replace(base, ""),
+                    "final":        pages[dest]["final_url"].replace(base, ""),
                 })
 
     return chains
@@ -105,15 +110,16 @@ def find_redirect_chains(crawl_data: dict) -> list:
 def find_orphans(crawl_data: dict, priority_pages: list) -> list:
     incoming = crawl_data["incoming_links"]
     orphans  = []
+    base     = get_site_url()
 
     for page in priority_pages:
-        full = normalize_url(page, SITE_URL)
+        full = normalize_url(page, base)
         srcs = incoming.get(full, [])
         if len(srcs) <= 2:
             orphans.append({
                 "url":            page,
                 "incoming_count": len(srcs),
-                "sources":        [s["source"].replace(SITE_URL, "") for s in srcs],
+                "sources":        [s["source"].replace(base, "") for s in srcs],
             })
 
     return sorted(orphans, key=lambda x: x["incoming_count"])
@@ -122,13 +128,14 @@ def find_orphans(crawl_data: dict, priority_pages: list) -> list:
 def find_nofollow_internal(crawl_data: dict) -> list:
     pages  = crawl_data["pages"]
     result = []
+    base   = get_site_url()
 
     for source, data in pages.items():
         for lk in data.get("links", []):
             if lk.get("nofollow") and lk["is_internal"]:
                 result.append({
-                    "source": source.replace(SITE_URL, ""),
-                    "target": lk["url"].replace(SITE_URL, ""),
+                    "source": source.replace(base, ""),
+                    "target": lk["url"].replace(base, ""),
                     "anchor": lk["anchor"],
                 })
 
@@ -136,14 +143,14 @@ def find_nofollow_internal(crawl_data: dict) -> list:
 
 
 def run(max_pages: int = MAX_CRAWL_PAGES) -> dict:
-    from config import PRIORITY_PAGES
     crawl_data = crawl(max_pages=max_pages)
+    priority_pages = get_priority_pages()
 
     return {
         "pages_crawled":    len(crawl_data["pages"]),
         "broken":           find_broken(crawl_data),
         "redirect_chains":  find_redirect_chains(crawl_data),
-        "orphans":          find_orphans(crawl_data, PRIORITY_PAGES),
+        "orphans":          find_orphans(crawl_data, priority_pages),
         "nofollow_internal": find_nofollow_internal(crawl_data),
         "crawl_data":       crawl_data,
     }

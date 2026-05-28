@@ -84,6 +84,7 @@ def test_audit_pages_reports_progress_without_orphan_inference(monkeypatch):
         }
 
     monkeypatch.setattr("modules.onpage.audit_page", fake_audit_page)
+    monkeypatch.setattr("modules.onpage._get_site_url", lambda: "https://www.secretoutlet.com.br")
     updates = []
 
     results = onpage.audit_pages(

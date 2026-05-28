@@ -1,11 +1,11 @@
 from collections import defaultdict
 from urllib.parse import urlparse
-from config import SITE_URL, BRAND_CLUSTERS
+from config import get_brand_clusters, get_priority_pages, get_site_url
 
 
 def _normalize(url: str) -> str:
     from modules.crawler import normalize_url
-    return normalize_url(url, SITE_URL)
+    return normalize_url(url, get_site_url())
 
 
 def build_graph(crawl_data: dict) -> dict:
@@ -37,7 +37,8 @@ def cluster_analysis(crawl_data: dict) -> list:
     in_deg = g["in_deg"]
     reports = []
 
-    for brand, cluster in BRAND_CLUSTERS.items():
+    base = get_site_url()
+    for brand, cluster in get_brand_clusters().items():
         pillar_full = _normalize(cluster["pillar"])
         sub_pages   = [_normalize(p) for p in cluster.get("pages", [])]
         blog_pages  = [_normalize(p) for p in cluster.get("blog", [])]
@@ -61,8 +62,8 @@ def cluster_analysis(crawl_data: dict) -> list:
             "pillar":              cluster["pillar"],
             "pillar_incoming":     incoming_pillar,
             "cluster_size":        len(all_pages),
-            "missing_from_pillar": [p.replace(SITE_URL, "") for p in missing_from_pillar],
-            "missing_to_pillar":   [p.replace(SITE_URL, "") for p in missing_to_pillar],
+            "missing_from_pillar": [p.replace(base, "") for p in missing_from_pillar],
+            "missing_to_pillar":   [p.replace(base, "") for p in missing_to_pillar],
             "health_score":        max(0, health),
         })
 
@@ -72,8 +73,9 @@ def cluster_analysis(crawl_data: dict) -> list:
 def top_linked_pages(crawl_data: dict, top_n: int = 20) -> list:
     g      = build_graph(crawl_data)
     in_deg = g["in_deg"]
+    base   = get_site_url()
     return [
-        {"url": url.replace(SITE_URL, ""), "incoming": count}
+        {"url": url.replace(base, ""), "incoming": count}
         for url, count in sorted(in_deg.items(), key=lambda x: x[1], reverse=True)[:top_n]
     ]
 
@@ -110,7 +112,7 @@ def d3_graph_data(crawl_data: dict) -> dict:
         if any(k in path for k in keywords):
             return "blog"
         # Brand pillars
-        pillars = [c["pillar"].strip("/") for c in BRAND_CLUSTERS.values()]
+        pillars = [c["pillar"].strip("/") for c in get_brand_clusters().values()]
         if path in pillars:
             return "pillar"
         return "category"
@@ -149,10 +151,10 @@ def run(crawl_data: dict = None) -> dict:
         print("Rastreando site para análise de links internos...")
         crawl_data = broken_links.crawl()
 
-    from config import PRIORITY_PAGES
+    priority_pages = get_priority_pages()
     return {
         "cluster_analysis": cluster_analysis(crawl_data),
         "top_linked":       top_linked_pages(crawl_data),
-        "orphans":          orphan_pages(crawl_data, PRIORITY_PAGES),
+        "orphans":          orphan_pages(crawl_data, priority_pages),
         "d3_data":          d3_graph_data(crawl_data),
     }

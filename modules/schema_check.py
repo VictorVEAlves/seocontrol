@@ -1,5 +1,5 @@
 """
-Schema Markup Auditor — secretoutlet.com.br
+Schema Markup Auditor
 
 Crawls priority pages and checks for JSON-LD structured data.
 For an e-commerce, the critical schemas are:
@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from bs4 import BeautifulSoup
 
-from config import PRIORITY_PAGES, SITE_URL, REQUEST_TIMEOUT
+from config import REQUEST_TIMEOUT, get_priority_pages, get_site_url
 
 _BROWSER_HEADERS = {
     "User-Agent": (
@@ -57,7 +57,9 @@ def _get_session() -> requests.Session:
     s = requests.Session()
     s.headers.update(_BROWSER_HEADERS)
     try:
-        s.get(SITE_URL + "/", timeout=12)
+        base = get_site_url()
+        if base:
+            s.get(base + "/", timeout=12)
     except Exception:
         pass
     _warmed[0] = s
@@ -80,7 +82,10 @@ def _extract_schemas(html: str) -> list[dict]:
 
 
 def _audit_url(path: str) -> dict:
-    url = path if path.startswith("http") else SITE_URL + path
+    base = get_site_url()
+    if not base and not path.startswith("http"):
+        raise RuntimeError("Configure a URL do site antes de auditar schema.")
+    url = path if path.startswith("http") else base + path
     session = _get_session()
 
     result: dict = {
@@ -154,7 +159,7 @@ def _audit_url(path: str) -> dict:
 
 
 def run(urls: list[str] | None = None, max_workers: int = 5) -> dict:
-    pages = urls or PRIORITY_PAGES[:40]
+    pages = urls or get_priority_pages()[:40]
 
     rows: list[dict] = []
     with ThreadPoolExecutor(max_workers=max_workers) as pool:

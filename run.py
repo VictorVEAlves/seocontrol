@@ -1,20 +1,20 @@
 """
-SEO Audit Tool — secretoutlet.com.br
+SEO Audit Tool
 
 Auditoria:
-  python run.py --all --urls /lacoste /tommy-hilfiger
+  python run.py --all --urls /categoria /produto
   python run.py --module gsc
-  python run.py --module onpage --urls /lacoste /aramis
-  python run.py --module broken-links --urls /lacoste
-  python run.py --module pagespeed --urls /lacoste
+  python run.py --module onpage --urls /categoria
+  python run.py --module broken-links --urls /categoria
+  python run.py --module pagespeed --urls /categoria
 
-Geração de conteúdo (Claude API):
-  python run.py --module generate --urls /lacoste /aramis
-  python run.py --module generate --urls /lacoste --api-key sk-ant-...
+Geração de conteúdo:
+  python run.py --module generate --urls /categoria
+  python run.py --module generate --urls /categoria --provider gemini --api-key ...
 
 Publicação na Bagy (Playwright):
   python run.py --module publish --bagy-email seu@email.com --bagy-password suasenha
-  python run.py --module publish --urls /lacoste --bagy-email ... --bagy-password ...
+  python run.py --module publish --urls /categoria --bagy-email ... --bagy-password ...
   python run.py --module publish --dry-run   (mostra o que faria sem publicar)
 
 Quando --urls é passado, TODOS os módulos focam apenas nessas páginas.
@@ -34,13 +34,14 @@ if sys.stdout.encoding != "utf-8":
 if sys.stderr.encoding != "utf-8":
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-from config import (BASE_DIR, PRIORITY_PAGES, SITE_URL, GSC_EXPORT_FOLDER, REPORTS_FOLDER,
-                    BRAND_CLUSTERS, BAGY_EMAIL, BAGY_PASSWORD, get_default_provider,
-                    get_provider_api_key)
+from config import (BASE_DIR, GSC_EXPORT_FOLDER, REPORTS_FOLDER,
+                    BAGY_EMAIL, BAGY_PASSWORD, get_default_provider,
+                    get_provider_api_key, get_site_url, get_site_name,
+                    get_priority_pages, get_brand_clusters)
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="SEO Audit — Secret Outlet")
+    parser = argparse.ArgumentParser(description="SEO Audit")
     parser.add_argument("--all", action="store_true", help="Rodar todos os módulos")
     parser.add_argument("--module", choices=["gsc", "gsc-api", "onpage", "duplicates",
                                               "broken-links", "clusters",
@@ -55,7 +56,7 @@ def parse_args():
     parser.add_argument("--gsc", default=GSC_EXPORT_FOLDER,
                         help="Pasta com os CSVs do Google Search Console")
     parser.add_argument("--urls", nargs="+", default=None,
-                        help="Páginas para focar (ex: /lacoste /tommy-hilfiger). "
+                        help="Páginas para focar (ex: /categoria /produto). "
                              "Quando passado, todos os módulos se limitam a essas páginas.")
     parser.add_argument("--max-pages", type=int, default=200,
                         help="Máximo de páginas para rastrear no broken-links (padrão: 200). "
@@ -92,10 +93,11 @@ def parse_args():
 
 
 def print_banner():
-    print("""
+    site = get_site_url() or "site não configurado"
+    print(f"""
 ===========================================
-  SEO Audit -- Secret Outlet
-  secretoutlet.com.br
+  SEO Audit -- {get_site_name()}
+  {site}
 ===========================================
 """)
 
@@ -122,7 +124,7 @@ def _slugs_from_urls(urls: list) -> list:
     """Extract path slugs from URL list for keyword matching."""
     slugs = []
     for u in urls:
-        path = urlparse(u if u.startswith("http") else SITE_URL + u).path
+        path = urlparse(u if u.startswith("http") else _full_url(u)).path
         slug = path.strip("/").split("/")[0]
         if slug:
             slugs.append(slug)
@@ -136,7 +138,7 @@ def _filter_gsc_to_urls(gsc_result: dict, urls: list) -> dict:
 
     slugs = _slugs_from_urls(urls)
 
-    # Build keywords from slugs (e.g. "lacoste", "tommy-hilfiger" -> "tommy hilfiger")
+    # Build keywords from slugs (e.g. "categoria-produto" -> "categoria produto")
     keywords = set()
     for s in slugs:
         keywords.add(s.lower())
@@ -170,11 +172,21 @@ def _brands_from_urls(urls: list) -> list:
     """Return brand cluster keys whose pillar is in the specified URLs."""
     slugs = set(_slugs_from_urls(urls))
     matched = []
-    for brand, cluster in BRAND_CLUSTERS.items():
+    clusters = get_brand_clusters()
+    for brand, cluster in clusters.items():
         pillar_slug = cluster["pillar"].strip("/")
         if pillar_slug in slugs:
             matched.append(brand)
-    return matched or list(BRAND_CLUSTERS.keys())
+    return matched or list(clusters.keys())
+
+
+def _full_url(url: str) -> str:
+    if url.startswith("http"):
+        return url
+    base = get_site_url()
+    if not base:
+        raise RuntimeError("Configure SITE_URL no .env ou a URL do site em /settings.")
+    return base + url
 
 
 # ── Module runners ────────────────────────────────────────────────────────────
@@ -239,13 +251,14 @@ def run_gsc(folder: str = None, urls: list = None) -> dict:
 def run_onpage(urls: list) -> list:
     print(f"  Auditando on-page de {len(urls)} paginas...")
     from analyzers import onpage
-    full_urls = [u if u.startswith("http") else SITE_URL + u for u in urls]
+    base = get_site_url()
+    full_urls = [_full_url(u) for u in urls]
     results = onpage.audit_pages(full_urls, verbose=False)
     for r in results:
         grade   = r.get("grade", "?")
         issues  = len(r.get("issues", []))
         warns   = len(r.get("warnings", []))
-        path    = r.get("url", "").replace(SITE_URL, "") or "/"
+        path    = r.get("url", "").replace(base, "") or "/"
         symbol  = "x" if grade in ("D", "F") else "!" if grade == "C" else "ok"
         print(f"   {symbol} [{grade}] {path[:55]:55s}  {issues} issues, {warns} avisos")
     return results
@@ -268,7 +281,7 @@ def run_broken_links(urls: list = None, max_pages: int = 200) -> dict:
     if urls:
         # Targeted mode: fetch only specified pages + check their outgoing links
         print(f"  Verificando links em {len(urls)} paginas especificas...")
-        full_urls = [u if u.startswith("http") else SITE_URL + u for u in urls]
+        full_urls = [_full_url(u) for u in urls]
 
         pages_data = {}
         incoming   = {}
@@ -307,8 +320,7 @@ def run_broken_links(urls: list = None, max_pages: int = 200) -> dict:
         print(f"  Rastreando site (max {max_pages} paginas)...")
         crawl_data = broken_links.crawl(max_pages=max_pages)
 
-    from config import PRIORITY_PAGES
-    scope = urls or PRIORITY_PAGES
+    scope = urls or get_priority_pages()
 
     result = {
         "pages_crawled":     len(crawl_data["pages"]),
@@ -357,7 +369,7 @@ def run_pagespeed(urls: list) -> list:
     for r in results:
         if r.get("strategy") != "mobile":
             continue
-        path  = r["url"].replace(SITE_URL, "") or "/"
+        path  = r["url"].replace(get_site_url(), "") or "/"
         perf  = r.get("performance_score")
         score = f"{perf}/100" if perf is not None else "ERRO"
         sym   = "x" if (perf or 100) < 50 else "!" if (perf or 100) < 75 else "ok"
@@ -552,12 +564,12 @@ def main():
         print("Use --all para rodar tudo, ou --module <nome> para um modulo especifico.")
         print("Exemplos:")
         print("  python run.py --all --gsc ./gsc_exports")
-        print("  python run.py --all --gsc ./gsc_exports --urls /lacoste /tommy-hilfiger")
+        print("  python run.py --all --gsc ./gsc_exports --urls /categoria /produto")
         sys.exit(0)
 
     # Determine scope
-    urls     = args.urls  # None = use PRIORITY_PAGES inside each module
-    scope    = urls or PRIORITY_PAGES
+    urls     = args.urls
+    scope    = urls or get_priority_pages()
     run_all  = args.all
     mod      = args.module
     focused  = bool(urls)

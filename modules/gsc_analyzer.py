@@ -1,61 +1,21 @@
 import os
 import pandas as pd
 from pathlib import Path
+from config import get_brand_aliases, get_commercial_terms, get_product_terms
 
-# Benchmarks calibrated for Secret Outlet / fashion ecommerce.
+# Generic CTR benchmarks. Client-specific entities/products come from /settings.
 # CTR values are percentage points from GSC, e.g. 0.80 means 0.80%.
 PAGE_CTR_MIN_DESIRED = 0.80
 PAGE_CTR_TARGET_DESIRED = 1.20
 AVG_POSITION_TARGET = 6.00
 
-BRAND_ALIASES = {
-    "tommy hilfiger": ["tommy hilfiger", "tommy"],
-    "tommy jeans": ["tommy jeans"],
-    "lacoste": ["lacoste"],
-    "calvin klein": ["calvin klein"],
-    "aramis": ["aramis"],
-    "reserva": ["reserva"],
-    "john john": ["john john"],
-    "levis": ["levis", "levi's", "levi"],
-    "dudalina": ["dudalina"],
-    "columbia": ["columbia"],
-    "diesel": ["diesel"],
-    "osklen": ["osklen"],
-    "ellus": ["ellus"],
-    "individual": ["individual"],
-    "sergio k": ["sergio k"],
-    "replay": ["replay"],
-    "puma": ["puma"],
-    "crocs": ["crocs"],
-    "colcci": ["colcci"],
-    "foxton": ["foxton"],
-    "nike": ["nike"],
-    "adidas": ["adidas"],
-    "hollister": ["hollister"],
-    "fred perry": ["fred perry"],
-    "aleatory": ["aleatory"],
-    "nautica": ["nautica"],
-    "secret outlet": ["secret outlet", "secretoutlet", "secrets outlet", "outlet secret", "secret"],
-}
-
-BRAND_TERMS = {
-    token
-    for aliases in BRAND_ALIASES.values()
-    for alias in aliases
-    for token in alias.replace("'", "").split()
-}
-
-PRODUCT_TERMS = {
-    "tenis", "tênis", "polo", "polos", "camisa", "camisas", "camiseta",
-    "camisetas", "moletom", "moletons", "jaqueta", "jaquetas", "calca",
-    "calça", "calcas", "calças", "bone", "boné", "bones", "chinelos",
-    "chinelo",
-}
-
-COMMERCIAL_TERMS = {
-    "outlet", "loja", "comprar", "preco", "preço", "promocao", "promoção",
-    "desconto", "sale", "masculino", "masculina", "original",
-}
+def _brand_terms() -> set[str]:
+    return {
+        token
+        for aliases in get_brand_aliases().values()
+        for alias in aliases
+        for token in alias.replace("'", "").split()
+    }
 
 
 def _norm(text: str) -> str:
@@ -70,7 +30,7 @@ def _detect_brand(text: str) -> str:
     value = f" {_norm(text)} "
     pairs = [
         (brand, alias)
-        for brand, aliases in BRAND_ALIASES.items()
+        for brand, aliases in get_brand_aliases().items()
         for alias in aliases
     ]
     for brand, alias in sorted(pairs, key=lambda item: len(item[1]), reverse=True):
@@ -80,16 +40,21 @@ def _detect_brand(text: str) -> str:
 
 
 def _has_product(text: str) -> bool:
-    return bool(_tokens(text) & PRODUCT_TERMS)
+    return bool(_tokens(text) & get_product_terms())
 
 
 def _has_commercial_modifier(text: str) -> bool:
-    return bool(_tokens(text) & COMMERCIAL_TERMS)
+    return bool(_tokens(text) & get_commercial_terms())
+
+
+def _is_configured_entity_or_product(text: str) -> bool:
+    tokens = _tokens(text)
+    return bool(tokens & _brand_terms() or tokens & get_product_terms())
 
 
 def _is_fashion_brand_product(text: str) -> bool:
-    tokens = _tokens(text)
-    return bool(tokens & BRAND_TERMS or tokens & PRODUCT_TERMS)
+    """Backward-compatible name for the generic configured-entity heuristic."""
+    return _is_configured_entity_or_product(text)
 
 
 def classify_query(text: str) -> str:
@@ -98,8 +63,6 @@ def classify_query(text: str) -> str:
     has_commercial = _has_commercial_modifier(text)
     token_count = len(_tokens(text))
 
-    if brand == "secret outlet":
-        return "brand_generic" if token_count <= 3 else "brand_navigational"
     if brand and has_product:
         return "product_brand"
     if brand and has_commercial:
@@ -114,7 +77,7 @@ def classify_query(text: str) -> str:
 
 
 def _expected_page_ctr(text: str = "") -> float:
-    return PAGE_CTR_MIN_DESIRED if _is_fashion_brand_product(text) else PAGE_CTR_TARGET_DESIRED
+    return PAGE_CTR_MIN_DESIRED if _is_configured_entity_or_product(text) else PAGE_CTR_TARGET_DESIRED
 
 
 def _ctr_status(value: float) -> str:
@@ -274,7 +237,7 @@ def low_ctr_pages(paginas: pd.DataFrame, min_imp: int = 1000) -> pd.DataFrame:
     df["ctr_gap"] = df["expected_ctr"] - df["ctr"]
     df["potential_clicks"] = ((df["ctr_gap"] / 100) * df["impressions"]).astype(int)
     df["benchmark"] = df["page"].apply(
-        lambda q: "moda/marca/produto >=0.80%" if _is_fashion_brand_product(q) else "geral 0.80%-1.20%"
+        lambda q: "entidade/produto configurado >=0.80%" if _is_configured_entity_or_product(q) else "geral 0.80%-1.20%"
     )
     return (df[(df["impressions"] >= min_imp) & (df["ctr_gap"] >= 0.20)]
             .sort_values("potential_clicks", ascending=False)
@@ -295,11 +258,11 @@ def benchmark_summary(queries: pd.DataFrame = None, pages: pd.DataFrame = None,
         impressions = float(df["impressions"].sum() or 0)
         return round(clicks / impressions * 100, 2)
 
-    fashion_queries = queries[
-        queries["query"].apply(_is_fashion_brand_product)
+    entity_queries = queries[
+        queries["query"].apply(_is_configured_entity_or_product)
     ] if not queries.empty and "query" in queries else pd.DataFrame()
-    fashion_pages = pages[
-        pages["page"].apply(_is_fashion_brand_product)
+    entity_pages = pages[
+        pages["page"].apply(_is_configured_entity_or_product)
     ] if not pages.empty and "page" in pages else pd.DataFrame()
 
     avg_ctr = trend.get("avg_ctr") or weighted_ctr(queries)
@@ -308,10 +271,10 @@ def benchmark_summary(queries: pd.DataFrame = None, pages: pd.DataFrame = None,
         avg_position = round(queries["position"].mean(), 2)
     avg_position = float(avg_position or 0)
 
-    fashion_ctr = weighted_ctr(fashion_queries)
-    fashion_position = round(fashion_queries["position"].mean(), 2) if not fashion_queries.empty else 0.0
-    if not fashion_position and not fashion_pages.empty:
-        fashion_position = round(fashion_pages["position"].mean(), 2)
+    entity_ctr = weighted_ctr(entity_queries)
+    entity_position = round(entity_queries["position"].mean(), 2) if not entity_queries.empty else 0.0
+    if not entity_position and not entity_pages.empty:
+        entity_position = round(entity_pages["position"].mean(), 2)
 
     return {
         "page_ctr_desired_range": "0.80%-1.20%",
@@ -322,12 +285,16 @@ def benchmark_summary(queries: pd.DataFrame = None, pages: pd.DataFrame = None,
         "avg_position_target": AVG_POSITION_TARGET,
         "avg_ctr": round(float(avg_ctr or 0), 2),
         "avg_ctr_status": _ctr_status(float(avg_ctr or 0)),
-        "fashion_ctr": fashion_ctr,
+        "entity_ctr": entity_ctr,
+        "entity_ctr_status": "informational",
+        "fashion_ctr": entity_ctr,
         "fashion_ctr_status": "informational",
         "avg_position": avg_position,
         "avg_position_status": _position_status(avg_position),
-        "fashion_position": fashion_position,
-        "fashion_position_status": _position_status(fashion_position) if fashion_position else "no_data",
+        "entity_position": entity_position,
+        "entity_position_status": _position_status(entity_position) if entity_position else "no_data",
+        "fashion_position": entity_position,
+        "fashion_position_status": _position_status(entity_position) if entity_position else "no_data",
     }
 
 

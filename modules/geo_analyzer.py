@@ -1,7 +1,7 @@
 """
 GEO Analyzer — Generative Engine Optimization
 
-Analisa como o secretoutlet.com.br aparece nas IAs de busca.
+Analisa como o site configurado aparece nas IAs de busca.
 
 Componentes:
   1. GEO Readiness Score  — analisa páginas do site para otimização em LLMs
@@ -25,7 +25,7 @@ from pathlib import Path
 
 import requests
 
-from config import BASE_DIR, SITE_URL
+from config import BASE_DIR, get_business_context, get_priority_pages, get_site_name, get_site_url
 from modules.crawler import get_page
 
 GEO_RESULTS_FILE = BASE_DIR / "geo_results.json"
@@ -33,24 +33,15 @@ GEO_RESULTS_FILE = BASE_DIR / "geo_results.json"
 # ── Queries de teste ──────────────────────────────────────────────────────────
 # Representam como usuários reais buscam nas IAs
 
-QUERIES = [
-    # Confiança / autenticidade
-    "Secret Outlet é confiável? Os produtos são originais?",
-    "secretoutlet.com.br é original ou fake?",
-    # Discovery de marca
-    "Onde comprar Lacoste com desconto no Brasil?",
-    "Onde comprar Tommy Hilfiger mais barato no Brasil?",
-    "Onde comprar jaqueta Columbia masculina no Brasil?",
-    "Onde comprar Levi's com desconto no Brasil?",
-    "Onde comprar Reserva com desconto?",
-    # Categoria
-    "Melhor outlet de moda masculina online no Brasil",
-    "Sites confiáveis para comprar roupas de marca com desconto no Brasil",
-    "Outlet online de roupas masculinas premium no Brasil",
-    # Produto específico
-    "Onde comprar jaqueta Tommy Hilfiger masculina com desconto?",
-    "Tênis Lacoste mais barato onde comprar?",
-]
+def _default_queries() -> list[str]:
+    site = get_site_name()
+    context = get_business_context()
+    return [
+        f"{site} e confiavel?",
+        f"{site} vale a pena?",
+        f"Melhores opcoes para {context}",
+        f"Onde encontrar {context} no Brasil?",
+    ]
 
 # ── GEO Readiness — fatores que LLMs valorizam ───────────────────────────────
 
@@ -150,7 +141,7 @@ def run_readiness(urls: list) -> list:
     """Score multiple pages and print results."""
     results = []
     for url in urls:
-        full = url if url.startswith("http") else SITE_URL + url
+        full = url if url.startswith("http") else get_site_url() + url
         r = score_page_geo(full)
         score = r["score"]
         grade = "A" if score >= 80 else "B" if score >= 60 else "C" if score >= 40 else "D"
@@ -164,7 +155,7 @@ def print_readiness(results: list):
     print(f"\n  {'#':>2}  {'URL':<45} {'Score':>6}  {'Grade'}")
     print("  " + "-" * 65)
     for i, r in enumerate(results, 1):
-        path = r["url"].replace(SITE_URL, "") or "/"
+        path = r["url"].replace(get_site_url(), "") or "/"
         print(f"  {i:>2}  {path[:45]:<45} {r['score']:>5}/100  {r['grade']}")
 
     # Mostrar fatores faltando para o pior
@@ -176,7 +167,7 @@ def print_readiness(results: list):
                 GEO_FACTORS[f]["label"]
                 for f, v in r["factors"].items() if not v
             ]
-            path = r["url"].replace(SITE_URL, "") or "/"
+            path = r["url"].replace(get_site_url(), "") or "/"
             print(f"\n  {path}")
             for m in missing:
                 print(f"    x {m}")
@@ -217,9 +208,9 @@ def _analyze_response(query: str, response: dict) -> dict:
     content   = response.get("content", "").lower()
     citations = response.get("citations", [])
 
-    site_domain = "secretoutlet.com.br"
+    site_domain = get_site_url().replace("https://", "").replace("http://", "").strip("/")
     site_cited  = any(site_domain in c for c in citations)
-    site_mentioned = site_domain in content or "secret outlet" in content
+    site_mentioned = site_domain in content or get_site_name().lower() in content
 
     competitor_domains = []
     for c in citations:
@@ -242,7 +233,7 @@ def _analyze_response(query: str, response: dict) -> dict:
 def run_perplexity_probe(api_key: str, queries: list = None) -> list:
     """Test all queries against Perplexity and record results."""
     if queries is None:
-        queries = QUERIES
+        queries = _default_queries()
 
     results = []
     print(f"\n  Testando {len(queries)} queries no Perplexity...")
@@ -330,17 +321,17 @@ def print_geo_recommendations(readiness: list, probe: list):
 
     # Check schema injection
     pages_without_faq = [
-        r["url"].replace(SITE_URL, "")
+        r["url"].replace(get_site_url(), "")
         for r in readiness
         if not r["factors"].get("faq_schema")
     ]
     if pages_without_faq:
-        print(f"\n  1. Injetar schema_injection.html no Bagy")
+        print(f"\n  1. Adicionar schema FAQPage/BreadcrumbList nas paginas")
         print(f"     {len(pages_without_faq)} paginas sem FAQPage/BreadcrumbList schema")
 
     # Low trust signals
     low_trust = [
-        r["url"].replace(SITE_URL, "")
+        r["url"].replace(get_site_url(), "")
         for r in readiness
         if not r["factors"].get("trust_signals") and r["score"] < 60
     ]
@@ -348,7 +339,7 @@ def print_geo_recommendations(readiness: list, probe: list):
         print(f"\n  2. Adicionar sinais de confianca nas paginas:")
         for p in low_trust[:4]:
             print(f"     - {p}")
-        print(f"     Palavras-chave: 'revendedor autorizado', 'original com nota fiscal'")
+        print(f"     Use sinais de confianca reais do cliente: garantia, certificacoes, reviews, endereco ou politicas.")
 
     # Low word count
     thin = [
@@ -370,37 +361,23 @@ def print_geo_recommendations(readiness: list, probe: list):
     print(f"\n  5. Acoes de autoridade para IAs:")
     print(f"     - Cadastrar no Google Business Profile (cita local businesses)")
     print(f"     - Publicar press releases em portais (UOL, Metrópoles, TudoCelular)")
-    print(f"     - Conseguir mencoes em blogs de moda masculina")
-    print(f"     - Responder reviews no Reclame Aqui (ja tem /reclame-aqui com 106 clicks)")
-    print(f"     - Manter /produtos-originais atualizado (LLMs usam para queries de trust)")
+    print(f"     - Conseguir mencoes em sites relevantes do segmento")
+    print(f"     - Responder reviews e manter perfis publicos atualizados")
+    print(f"     - Manter paginas institucionais e politicas claras")
     print("=" * 60)
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────
 
-GEO_PAGES = [
-    "/",
-    "/produtos-originais",
-    "/perguntas-frequentes",
-    "/lacoste",
-    "/tommy-hilfiger",
-    "/reserva",
-    "/aramis",
-    "/levis",
-    "/calvin-klein",
-    "/dudalina",
-    "/guia-de-tamanhos",
-]
-
-
 def run(api_key: str = None, queries: list = None) -> dict:
+    GEO_PAGES = get_priority_pages() or ["/"]
     print(f"  Analisando GEO Readiness de {len(GEO_PAGES)} paginas...")
     readiness = run_readiness(GEO_PAGES)
     print_readiness(readiness)
 
     probe = []
     if api_key:
-        probe = run_perplexity_probe(api_key, queries)
+        probe = run_perplexity_probe(api_key, queries or _default_queries())
         print_probe_summary(probe)
     else:
         print("\n  Perplexity nao configurado — rodando apenas readiness score.")

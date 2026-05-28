@@ -9,6 +9,7 @@ can evolve into a persistent task system later.
 from __future__ import annotations
 
 import math
+from config import get_site_url
 
 
 def _priority(impact: float, confidence: float, effort: float) -> float:
@@ -449,8 +450,9 @@ def print_backlog(items: list) -> None:
         return
 
     print(f"   Top {len(items)} acoes priorizadas:")
+    base = get_site_url()
     for idx, item in enumerate(items, start=1):
-        target = str(item["target"]).replace("https://www.secretoutlet.com.br", "")
+        target = str(item["target"]).replace(base, "")
         print(
             f"   {idx:02d}. [{item['priority']:>5}] {item['action']} "
             f"({item['source']})"

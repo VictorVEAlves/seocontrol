@@ -1,4 +1,4 @@
-from config import SITE_URL
+from config import get_site_url
 
 
 TITLE_MIN = 45
@@ -19,9 +19,10 @@ def analyze(onpage_results: list, pending_changes: list | None = None) -> dict:
     pending_by_url = {item.get("_url") or item.get("url"): item for item in pending_changes or []}
     rows = []
     issues = []
+    base = get_site_url()
     for page in onpage_results or []:
         url = page.get("url", "")
-        path = url.replace(SITE_URL, "") or "/"
+        path = url.replace(base, "") or "/"
         pending = pending_by_url.get(path) or pending_by_url.get(url)
         title = page.get("title", "")
         desc = page.get("description", "")

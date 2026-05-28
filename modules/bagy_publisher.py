@@ -6,7 +6,7 @@ abre o Chrome, faz login na Bagy e aplica cada mudança.
 
 Uso:
   python run.py --module publish               # publica tudo que está pendente
-  python run.py --module publish --urls /lacoste  # publica só essa URL
+  python run.py --module publish --urls /categoria  # publica só essa URL
   python run.py --module publish --dry-run     # mostra o que faria, sem publicar
 """
 
