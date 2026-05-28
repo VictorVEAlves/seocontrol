@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import math
 import os
-from datetime import datetime, timezone
+import hashlib
+import re
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlparse
 
@@ -47,6 +49,81 @@ def _clean(value: Any) -> Any:
         except Exception:
             pass
     return value
+
+
+def _json_dict(value: Any) -> dict:
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
+def _kanban_meta(evidence: Any) -> dict:
+    meta = _json_dict(evidence).get("_kanban")
+    return meta if isinstance(meta, dict) else {}
+
+
+def _merge_kanban_meta(evidence: Any, **updates) -> dict:
+    evidence = dict(_json_dict(evidence))
+    meta = dict(_kanban_meta(evidence))
+    meta.update({k: v for k, v in updates.items() if v is not None})
+    evidence["_kanban"] = meta
+    return _clean(evidence)
+
+
+def _norm_signature_part(value: Any) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip().casefold())
+    base = str(get_site_url() or "").rstrip("/").casefold()
+    if base and text.startswith(base):
+        text = text[len(base):] or "/"
+    return text.rstrip("/") or "/"
+
+
+def _recommendation_signature(source: Any, action: Any, target: Any) -> str:
+    raw = "|".join([
+        _norm_signature_part(source),
+        _norm_signature_part(action),
+        _norm_signature_part(target),
+    ])
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _row_signature(row: dict) -> str:
+    meta = _kanban_meta(row.get("evidence"))
+    return str(meta.get("signature") or _recommendation_signature(
+        row.get("source"), row.get("action"), row.get("target")
+    ))
+
+
+def _parse_dt(value: Any):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _blocks_new_duplicate(row: dict, now: datetime | None = None, done_window_days: int = 30) -> bool:
+    status = str(row.get("status") or "open")
+    status = {
+        "pending": "open",
+        "approved": "todo",
+        "in_progress": "doing",
+        "completed": "done",
+    }.get(status, status)
+    if status in {"open", "todo", "doing"}:
+        return True
+    if status != "done":
+        return False
+
+    now = now or datetime.now(timezone.utc)
+    meta = _kanban_meta(row.get("evidence"))
+    moved_at = (
+        _parse_dt(meta.get("moved_at"))
+        or _parse_dt(row.get("completed_at"))
+        or _parse_dt(row.get("created_at"))
+    )
+    return bool(moved_at and moved_at >= now - timedelta(days=done_window_days))
 
 
 def _path(url: str) -> str:
@@ -432,33 +509,120 @@ def _save_generic_module_issues(sb: Client, site_id: str, run_id: str, results: 
         sb.table("issues").insert(rows).execute()
 
 
-def _save_recommendations(sb: Client, site_id: str, run_id: str, items: list) -> None:
-    # Remove backlog items still in 'open' status — they are stale from the previous run.
-    # Items already moved to todo/doing/done by the user are preserved.
-    sb.table("recommendations").delete().eq("site_id", site_id).eq("status", "open").execute()
+def _fetch_existing_recommendations(sb: Client, site_id: str) -> list[dict]:
+    try:
+        return (
+            sb.table("recommendations")
+            .select("id, run_id, source, action, target, reason, status, priority, evidence, created_at, completed_at")
+            .eq("site_id", site_id)
+            .limit(1000)
+            .execute().data
+            or []
+        )
+    except Exception:
+        return []
+
+
+def _item_payload(sb: Client, site_id: str, run_id: str, item: dict, now: str,
+                  source_override: str | None = None) -> dict:
+    target = item.get("target", "")
+    source = source_override or item.get("source")
+    url_id = _upsert_url(sb, site_id, target) if str(target).startswith(("http", "/")) else None
+    signature = _recommendation_signature(source, item.get("action"), target)
+    evidence = _merge_kanban_meta(
+        item.get("evidence", {}),
+        signature=signature,
+        last_seen_at=now,
+        generated_source=source,
+    )
+    return {
+        "run_id": run_id,
+        "site_id": site_id,
+        "url_id": url_id,
+        "source": source,
+        "action": item.get("action"),
+        "target": str(target),
+        "reason": item.get("reason"),
+        "impact": item.get("impact"),
+        "confidence": item.get("confidence"),
+        "effort": item.get("effort"),
+        "priority": item.get("priority"),
+        "owner": item.get("owner"),
+        "evidence": evidence,
+        "status": "open",
+    }
+
+
+def _sync_recommendation_items(sb: Client, site_id: str, run_id: str, items: list,
+                               source_override: str | None = None) -> int:
+    now = _now()
+    existing = _fetch_existing_recommendations(sb, site_id)
+    existing_by_signature: dict[str, list[dict]] = {}
+    for row in existing:
+        existing_by_signature.setdefault(_row_signature(row), []).append(row)
 
     rows = []
+    seen_new_signatures = set()
+    seen_sources = set()
+    refreshed_ids = set()
     for item in items or []:
-        target = item.get("target", "")
-        url_id = _upsert_url(sb, site_id, target) if str(target).startswith(("http", "/")) else None
-        rows.append({
-            "run_id": run_id,
-            "site_id": site_id,
-            "url_id": url_id,
-            "source": item.get("source"),
-            "action": item.get("action"),
-            "target": str(target),
-            "reason": item.get("reason"),
-            "impact": item.get("impact"),
-            "confidence": item.get("confidence"),
-            "effort": item.get("effort"),
-            "priority": item.get("priority"),
-            "owner": item.get("owner"),
-            "evidence": _clean(item.get("evidence", {})),
-            "status": "open",
-        })
+        payload = _item_payload(sb, site_id, run_id, item, now, source_override=source_override)
+        signature = _kanban_meta(payload["evidence"]).get("signature")
+        seen_sources.add(payload.get("source"))
+        if signature in seen_new_signatures:
+            continue
+        seen_new_signatures.add(signature)
+
+        matches = existing_by_signature.get(signature, [])
+        blocking = next((row for row in matches if _blocks_new_duplicate(row)), None)
+        if blocking:
+            if blocking.get("id") not in refreshed_ids:
+                existing_evidence = _json_dict(blocking.get("evidence"))
+                merged_evidence = dict(payload["evidence"])
+                merged_evidence.update({
+                    key: value for key, value in existing_evidence.items()
+                    if str(key).startswith("_")
+                })
+                merged_evidence["_kanban"] = {
+                    **_kanban_meta(payload["evidence"]),
+                    **_kanban_meta(existing_evidence),
+                    "last_seen_at": now,
+                    "signature": signature,
+                }
+                update_payload = {
+                    key: payload[key]
+                    for key in ("run_id", "url_id", "source", "action", "target", "reason",
+                                "impact", "confidence", "effort", "priority", "owner")
+                }
+                update_payload["evidence"] = _clean(merged_evidence)
+                sb.table("recommendations").update(update_payload).eq("id", blocking["id"]).execute()
+                refreshed_ids.add(blocking.get("id"))
+            for duplicate in matches:
+                if duplicate.get("id") == blocking.get("id"):
+                    continue
+                if str(duplicate.get("status") or "open") in {"open", "pending"}:
+                    sb.table("recommendations").delete().eq("id", duplicate.get("id")).execute()
+            continue
+
+        rows.append(payload)
+
+    # Remove open backlog cards that the latest run no longer sees. User-moved
+    # cards stay in place and are only refreshed when the same task appears again.
+    for row in existing:
+        if (
+            str(row.get("status") or "open") == "open"
+            and row.get("source") in seen_sources
+            and _row_signature(row) not in seen_new_signatures
+        ):
+            sb.table("recommendations").delete().eq("id", row.get("id")).execute()
+
     if rows:
         sb.table("recommendations").insert(rows).execute()
+    return len(rows)
+
+
+def _save_recommendations(sb: Client, site_id: str, run_id: str, items: list) -> None:
+    _sync_recommendation_items(sb, site_id, run_id, items)
 
 
 def save_content_changes(items: list) -> int:
@@ -496,32 +660,8 @@ def save_tag_suggestions(items: list) -> int:
     site_id = _upsert_site(sb, get_site_name(), get_site_url())
     run_id  = _create_run(sb, site_id, "gsc-api", [], {"tag_suggestions": len(items)})
 
-    # Remove stale open tag-suggestion tasks so we don't accumulate duplicates
-    sb.table("recommendations").delete().eq("site_id", site_id).eq("source", "gsc_tags").eq("status", "open").execute()
-
-    rows = []
-    for item in items:
-        target = str(item.get("target") or "")
-        url_id = _upsert_url(sb, site_id, target) if target.startswith(("/", "http")) else None
-        rows.append({
-            "run_id":     run_id,
-            "site_id":    site_id,
-            "url_id":     url_id,
-            "source":     "gsc_tags",
-            "action":     item.get("action"),
-            "target":     target,
-            "reason":     item.get("reason"),
-            "impact":     item.get("impact"),
-            "confidence": item.get("confidence"),
-            "effort":     item.get("effort"),
-            "priority":   item.get("priority"),
-            "owner":      item.get("owner", "SEO"),
-            "evidence":   _clean(item.get("evidence", {})),
-            "status":     "open",
-        })
-    if rows:
-        sb.table("recommendations").insert(rows).execute()
-    return len(rows)
+    normalized = [{**item, "source": "gsc_tags", "owner": item.get("owner", "SEO")} for item in items]
+    return _sync_recommendation_items(sb, site_id, run_id, normalized, source_override="gsc_tags")
 
 
 def save_blog_ideas(ideas: list) -> int:

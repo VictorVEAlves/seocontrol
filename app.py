@@ -7,6 +7,7 @@ import sys
 import threading
 import uuid
 from collections import OrderedDict
+from datetime import datetime, timezone
 from urllib.parse import quote
 
 from dotenv import load_dotenv
@@ -555,7 +556,7 @@ def styles() -> str:
     .is-hidden { display: none !important; }
 
     /* ── Kanban ── */
-    .kanban { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; align-items: start; margin-top: 4px; }
+    .kanban { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; align-items: stretch; margin-top: 4px; }
     .lane {
       background: var(--line-light);
       border: 1px solid var(--line);
@@ -563,6 +564,8 @@ def styles() -> str:
       min-height: 500px;
       padding: 12px;
       transition: outline .1s, background .1s;
+      display: flex;
+      flex-direction: column;
     }
     .lane.drag-over { outline: 2px solid var(--brand); background: var(--brand-light); }
     .lane-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
@@ -572,6 +575,13 @@ def styles() -> str:
     .lane[data-status="todo"]  .lane-head h3 { color: var(--info); }
     .lane[data-status="doing"] .lane-head h3 { color: var(--warn); }
     .lane[data-status="done"]  .lane-head h3 { color: var(--ok); }
+    .lane-cards {
+      flex: 1;
+      min-height: 420px;
+      padding-bottom: 36px;
+      border-radius: var(--radius-sm);
+    }
+    .lane-cards.drag-over { background: rgba(159, 29, 44, .04); }
     .task-card {
       background: var(--panel);
       border: 1px solid var(--line);
@@ -593,7 +603,8 @@ def styles() -> str:
       border-radius: 3px 0 0 3px;
     }
     .task-card:active { cursor: grabbing; box-shadow: var(--shadow-lg); transform: scale(1.01); }
-    .task-card.dragging { opacity: .5; }
+    .task-card.dragging { opacity: .45; }
+    .task-card.drop-before { transform: translateY(3px); }
     .task-title { font-weight: 700; font-size: 13px; line-height: 1.4; margin-bottom: 8px; color: var(--ink); }
     .delete-btn { opacity:0; background:none; border:none; cursor:pointer; color:var(--muted); font-size:13px; padding:2px 4px; border-radius:4px; line-height:1; transition:opacity .15s, background .15s; flex-shrink:0; }
     .task-card:hover .delete-btn { opacity:1; }
@@ -605,6 +616,7 @@ def styles() -> str:
     .tag-priority-low    { background: var(--ok-bg); color: var(--ok); border-color: #86efac; }
     .task-target { color: var(--muted); font-size: 11px; margin-bottom: 6px; word-break: break-all; }
     .task-reason { color: var(--ink-mid); font-size: 12px; line-height: 1.4; }
+    .task-dates { color: var(--muted); font-size: 10px; margin-top: 8px; }
     .empty-lane { text-align: center; padding: 32px 12px; color: var(--muted); font-size: 13px; }
     .empty-lane .empty-icon { font-size: 28px; margin-bottom: 8px; opacity: .4; }
 
@@ -1025,6 +1037,74 @@ def normalize_recommendation_status(value: str) -> str:
     value = str(value or "open")
     aliases = {"pending": "open", "approved": "todo", "in_progress": "doing", "completed": "done"}
     return aliases.get(value, value if value in {c[0] for c in KANBAN_COLUMNS} else "open")
+
+
+def _json_dict(value) -> dict:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = _json_mod.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _kanban_meta(row_or_evidence) -> dict:
+    if isinstance(row_or_evidence, dict) and "evidence" in row_or_evidence:
+        evidence = row_or_evidence.get("evidence")
+    else:
+        evidence = row_or_evidence
+    evidence = _json_dict(evidence)
+    meta = evidence.get("_kanban")
+    return meta if isinstance(meta, dict) else {}
+
+
+def _merge_kanban_meta(evidence, updates: dict) -> dict:
+    evidence = dict(_json_dict(evidence))
+    meta = dict(_kanban_meta(evidence))
+    meta.update({k: v for k, v in updates.items() if v is not None})
+    evidence["_kanban"] = meta
+    return evidence
+
+
+def _parse_iso_dt(value):
+    if not value:
+        return None
+    try:
+        text = str(value).replace("Z", "+00:00")
+        return datetime.fromisoformat(text)
+    except Exception:
+        return None
+
+
+def _format_br_dt(value) -> str:
+    dt = _parse_iso_dt(value)
+    if not dt:
+        return ""
+    if dt.tzinfo:
+        dt = dt.astimezone()
+    return dt.strftime("%d/%m/%Y %H:%M")
+
+
+def _kanban_position(row: dict) -> float | None:
+    value = _kanban_meta(row).get("position")
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _kanban_sort_key(row: dict):
+    pos = _kanban_position(row)
+    if pos is not None:
+        return (0, pos)
+    try:
+        priority = float(row.get("priority") or 0)
+    except Exception:
+        priority = 0
+    return (1, -priority, str(row.get("created_at") or ""))
 
 
 # ── POST actions ───────────────────────────────────────────────────────────────
@@ -1544,7 +1624,7 @@ def kanban():
     try:
         rows = (
             get_supabase().table("recommendations")
-            .select("id, priority, source, action, target, reason, owner, status, created_at")
+            .select("id, priority, source, action, target, reason, owner, status, evidence, created_at, completed_at")
             .order("priority", desc=True)
             .limit(300)
             .execute().data
@@ -1556,6 +1636,8 @@ def kanban():
     for row in rows:
         key = normalize_recommendation_status(row.get("status"))
         by_status.setdefault(key, []).append(row)
+    for status in by_status:
+        by_status[status].sort(key=_kanban_sort_key)
 
     lanes = ""
     for status, label, icon in KANBAN_COLUMNS:
@@ -1567,6 +1649,18 @@ def kanban():
             except Exception:
                 pv = 0
             p_cls = "tag-priority-high" if pv >= 15 else "tag-priority-mid" if pv >= 8 else ""
+            meta = _kanban_meta(row)
+            moved_at = _format_br_dt(meta.get("moved_at") or row.get("completed_at"))
+            seen_at = _format_br_dt(meta.get("last_seen_at"))
+            created_at = _format_br_dt(row.get("created_at"))
+            date_bits = []
+            if moved_at:
+                date_bits.append(f"movido em {moved_at}")
+            elif created_at:
+                date_bits.append(f"criado em {created_at}")
+            if seen_at:
+                date_bits.append(f"visto na auditoria em {seen_at}")
+            dates_html = f'<div class="task-dates">{esc(" · ".join(date_bits))}</div>' if date_bits else ""
             cards_html += f"""
 <article class="task-card" draggable="true" data-id="{esc(row.get('id', ''))}">
   <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px">
@@ -1582,6 +1676,7 @@ def kanban():
   </div>
   <div class="task-target">{esc(str(row.get('target', ''))[:100])}</div>
   <div class="task-reason">{esc(str(row.get('reason', ''))[:160])}</div>
+  {dates_html}
 </article>"""
         count = len(by_status.get(status, []))
         empty = f'<div class="empty-lane"><div class="empty-icon">○</div>Sem tarefas aqui</div>' if not count else ""
@@ -1591,78 +1686,139 @@ def kanban():
     <h3>{esc(icon)} {esc(label)}</h3>
     <span class="lane-count" id="count-{esc(status)}">{count}</span>
   </div>
-  {cards_html}{empty}
+  <div class="lane-cards" data-status="{esc(status)}">{cards_html}{empty}</div>
 </section>"""
 
     body = f"""
 <div class="section-head">
   <div>
     <h1>Kanban SEO</h1>
-    <p class="muted" style="margin-top:4px">Arraste as tarefas entre colunas — salvo automaticamente.</p>
+    <p class="muted" style="margin-top:4px">Arraste entre colunas ou reordene dentro da mesma coluna — salvo automaticamente.</p>
   </div>
   <a href="/tools" class="btn btn-primary">+ Gerar tarefas</a>
 </div>
 <div class="kanban">{lanes}</div>
 <script>
   let dragged = null;
-  let dragOriginLane = null;
+  let dragOriginCards = null;
+  let dragOriginNext = null;
 
   document.querySelectorAll('.task-card').forEach(card => {{
     card.addEventListener('dragstart', e => {{
       dragged = card;
-      dragOriginLane = card.closest('.lane');
+      dragOriginCards = card.closest('.lane-cards');
+      dragOriginNext = card.nextElementSibling;
       card.classList.add('dragging');
       e.dataTransfer.effectAllowed = 'move';
       e.dataTransfer.setData('text/plain', card.dataset.id);
     }});
-    card.addEventListener('dragend', () => card.classList.remove('dragging'));
+    card.addEventListener('dragend', () => {{
+      card.classList.remove('dragging');
+      document.querySelectorAll('.lane,.lane-cards').forEach(el => el.classList.remove('drag-over'));
+      dragged = null;
+      dragOriginCards = null;
+      dragOriginNext = null;
+    }});
   }});
 
-  function refreshCount(lane) {{
-    const count = lane.querySelectorAll('.task-card').length;
+  function getLaneCards(el) {{
+    return el.classList.contains('lane-cards') ? el : el.querySelector('.lane-cards');
+  }}
+
+  function refreshCount(laneOrCards) {{
+    const lane = laneOrCards.closest('.lane') || laneOrCards;
+    const cards = getLaneCards(lane);
+    const count = cards.querySelectorAll('.task-card').length;
     const badge = document.getElementById('count-' + lane.dataset.status);
     if (badge) badge.textContent = count;
-    const empty = lane.querySelector('.empty-lane');
+    const empty = cards.querySelector('.empty-lane');
     if (count > 0 && empty) empty.remove();
-    if (count === 0 && !lane.querySelector('.empty-lane')) {{
-      lane.insertAdjacentHTML('beforeend',
+    if (count === 0 && !cards.querySelector('.empty-lane')) {{
+      cards.insertAdjacentHTML('beforeend',
         '<div class="empty-lane"><div class="empty-icon">○</div>Sem tarefas aqui</div>');
     }}
   }}
 
+  function getDragAfterElement(container, y) {{
+    const cards = [...container.querySelectorAll('.task-card:not(.dragging)')];
+    return cards.reduce((closest, child) => {{
+      const box = child.getBoundingClientRect();
+      const offset = y - box.top - box.height / 2;
+      if (offset < 0 && offset > closest.offset) {{
+        return {{ offset, element: child }};
+      }}
+      return closest;
+    }}, {{ offset: Number.NEGATIVE_INFINITY, element: null }}).element;
+  }}
+
+  function placeDragged(lane, clientY) {{
+    if (!dragged) return;
+    const cards = getLaneCards(lane);
+    const empty = cards.querySelector('.empty-lane');
+    if (empty) empty.remove();
+    const after = getDragAfterElement(cards, clientY);
+    if (after) cards.insertBefore(dragged, after);
+    else cards.appendChild(dragged);
+  }}
+
+  function rollbackDrag(card, originCards, originNext) {{
+    if (!card || !originCards) return;
+    if (originNext && originNext.parentNode === originCards) {{
+      originCards.insertBefore(card, originNext);
+    }} else {{
+      originCards.appendChild(card);
+    }}
+    refreshCount(originCards);
+  }}
+
+  async function saveCardPosition(card, lane) {{
+    const cards = getLaneCards(lane);
+    const order = [...cards.querySelectorAll('.task-card')].map(el => el.dataset.id);
+    const status = lane.dataset.status;
+    const id = card.dataset.id;
+    const res = await fetch('/kanban/update/' + id, {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{status, order}})
+    }});
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || 'Erro ao salvar');
+  }}
+
   document.querySelectorAll('.lane').forEach(lane => {{
-    lane.addEventListener('dragover', e => {{ e.preventDefault(); lane.classList.add('drag-over'); }});
-    lane.addEventListener('dragleave', () => lane.classList.remove('drag-over'));
+    lane.addEventListener('dragover', e => {{
+      e.preventDefault();
+      lane.classList.add('drag-over');
+      getLaneCards(lane).classList.add('drag-over');
+      placeDragged(lane, e.clientY);
+      refreshCount(lane);
+      if (dragOriginCards) refreshCount(dragOriginCards);
+    }});
+    lane.addEventListener('dragleave', e => {{
+      if (!lane.contains(e.relatedTarget)) {{
+        lane.classList.remove('drag-over');
+        getLaneCards(lane).classList.remove('drag-over');
+      }}
+    }});
     lane.addEventListener('drop', async e => {{
       e.preventDefault();
       lane.classList.remove('drag-over');
-      if (!dragged || lane === dragged.closest('.lane')) return;
-
-      const id     = dragged.dataset.id;
-      const status = lane.dataset.status;
-
-      // Optimistic update
-      lane.insertBefore(dragged, lane.querySelector('.empty-lane') || null);
+      getLaneCards(lane).classList.remove('drag-over');
+      if (!dragged) return;
+      const droppedCard = dragged;
+      const originCards = dragOriginCards;
+      const originNext = dragOriginNext;
+      placeDragged(lane, e.clientY);
       refreshCount(lane);
-      if (dragOriginLane) refreshCount(dragOriginLane);
+      if (originCards) refreshCount(originCards);
 
       try {{
-        const res  = await fetch('/kanban/update/' + id, {{
-          method: 'POST',
-          headers: {{'Content-Type': 'application/json'}},
-          body: JSON.stringify({{status}})
-        }});
-        const data = await res.json();
-        if (!res.ok || !data.ok) throw new Error(data.error || 'Erro ao salvar');
-        showToast('Tarefa movida', 'ok');
+        await saveCardPosition(droppedCard, lane);
+        showToast('Kanban atualizado', 'ok');
       }} catch (err) {{
-        // Rollback on failure
-        if (dragOriginLane) {{
-          dragOriginLane.appendChild(dragged);
-          refreshCount(lane);
-          refreshCount(dragOriginLane);
-        }}
-        showToast('Falha ao salvar — revertido', 'err');
+        rollbackDrag(droppedCard, originCards, originNext);
+        refreshCount(lane);
+        showToast('Falha ao salvar - revertido', 'err');
       }}
     }});
   }});
@@ -1692,11 +1848,12 @@ function deleteCard(btn, id) {
       if (!res.ok || !data.ok) throw new Error(data.error || 'erro');
       const lane = card.closest('.lane');
       card.remove();
-      const cnt  = lane.querySelectorAll('.task-card').length;
+      const cards = lane.querySelector('.lane-cards');
+      const cnt  = cards.querySelectorAll('.task-card').length;
       const badge = document.getElementById('count-' + lane.dataset.status);
       if (badge) badge.textContent = cnt;
-      if (cnt === 0 && !lane.querySelector('.empty-lane'))
-        lane.insertAdjacentHTML('beforeend','<div class="empty-lane"><div class="empty-icon">○</div>Sem tarefas aqui</div>');
+      if (cnt === 0 && !cards.querySelector('.empty-lane'))
+        cards.insertAdjacentHTML('beforeend','<div class="empty-lane"><div class="empty-icon">○</div>Sem tarefas aqui</div>');
       if (typeof showToast === 'function') showToast('Tarefa excluída', 'ok');
     } catch (err) {
       card.style.opacity = '1';
@@ -1720,9 +1877,62 @@ function deleteCard(btn, id) {
 def update_kanban_card(rec_id):
     data   = request.get_json(silent=True) or {}
     status = normalize_recommendation_status(data.get("status"))
+    order = data.get("order") if isinstance(data.get("order"), list) else []
+    order = [str(item) for item in order if str(item)]
+    if rec_id not in order:
+        order.append(rec_id)
+    now = datetime.now(timezone.utc).isoformat()
     try:
-        get_supabase().table("recommendations").update({"status": status}).eq("id", rec_id).execute()
-        return jsonify({"ok": True, "status": status})
+        sb = get_supabase()
+        rows = []
+        if order:
+            rows = (
+                sb.table("recommendations")
+                .select("id, status, evidence, completed_at")
+                .in_("id", order[:300])
+                .execute().data
+            )
+        if not rows:
+            found = (
+                sb.table("recommendations")
+                .select("id, status, evidence, completed_at")
+                .eq("id", rec_id)
+                .single()
+                .execute().data
+            )
+            rows = [found] if found else []
+
+        by_id = {str(row.get("id")): row for row in rows}
+        changed = 0
+        for index, card_id in enumerate(order[:300]):
+            row = by_id.get(str(card_id))
+            if not row:
+                continue
+            is_moved_card = str(card_id) == str(rec_id)
+            existing_status = normalize_recommendation_status(row.get("status"))
+            meta_updates = {
+                "position": index * 1000,
+                "column": status,
+                "updated_at": now,
+            }
+            if is_moved_card:
+                meta_updates.update({
+                    "moved_at": now,
+                    "previous_status": existing_status,
+                })
+
+            payload = {"evidence": _merge_kanban_meta(row.get("evidence"), meta_updates)}
+            if is_moved_card:
+                payload["status"] = status
+                if status == "done" and not row.get("completed_at"):
+                    payload["completed_at"] = now
+                elif status != "done":
+                    payload["completed_at"] = None
+
+            sb.table("recommendations").update(payload).eq("id", card_id).execute()
+            changed += 1
+
+        return jsonify({"ok": True, "status": status, "updated": changed})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 503
 
