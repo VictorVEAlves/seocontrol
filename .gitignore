@@ -1,27 +1,54 @@
 .env
 .env.local
+.env.*
+!.env.example
+
+# Python/cache
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
-node_modules/
+.coverage
+htmlcov/
 
-reports/*.html
-reports/*.json
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Node/frontend leftovers
+node_modules/
+package.json
+package-lock.json
+
+# Runtime reports and generated data
+reports/
 pending_changes.json
 geo_results.json
 blog_briefs.json
 blog_ideas.json
 _gemini_test_out.txt
+*.log
+*.tmp
+*.sqlite
+*.sqlite3
+*.db
 
 .site_config.json
 .last_full_audit.json
 .dashboard_cache_*.json
 .dashboard_ai_*.json
 
-gsc_exports/*.csv
+gsc_exports/
 
-# Google OAuth credentials — never commit
+# Google OAuth credentials - never commit
 gsc_credentials.json
 .gsc_token.json
+
+# Local validation scratch files
+schema_injection.html
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
