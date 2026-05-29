@@ -1,0 +1,15 @@
+{
+  "name": "seocontrol",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SEO Control Flask app managed through npm scripts.",
+  "scripts": {
+    "postinstall": "node scripts/npm-python.js install",
+    "buiid": "node scripts/npm-python.js build",
+    "build": "node scripts/npm-python.js build",
+    "start": "node scripts/npm-python.js start"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

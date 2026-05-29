@@ -19,8 +19,6 @@ env/
 
 # Node/frontend leftovers
 node_modules/
-package.json
-package-lock.json
 
 # Runtime reports and generated data
 reports/
