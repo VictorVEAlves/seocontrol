@@ -37,6 +37,7 @@ _gemini_test_out.txt
 
 .site_config.json
 .last_full_audit.json
+.runtime/
 .dashboard_cache_*.json
 .dashboard_ai_*.json
 

@@ -25,10 +25,10 @@ from pathlib import Path
 
 import requests
 
-from config import BASE_DIR, get_business_context, get_priority_pages, get_site_name, get_site_url
+from config import get_business_context, get_priority_pages, get_scoped_runtime_file, get_site_name, get_site_url
 from modules.crawler import get_page
 
-GEO_RESULTS_FILE = BASE_DIR / "geo_results.json"
+GEO_RESULTS_FILE = get_scoped_runtime_file("geo_results.json", "geo")
 
 # ── Queries de teste ──────────────────────────────────────────────────────────
 # Representam como usuários reais buscam nas IAs

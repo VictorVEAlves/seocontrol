@@ -37,7 +37,7 @@ if sys.stderr.encoding != "utf-8":
 from config import (BASE_DIR, GSC_EXPORT_FOLDER, REPORTS_FOLDER,
                     BAGY_EMAIL, BAGY_PASSWORD, get_default_provider,
                     get_provider_api_key, get_site_url, get_site_name,
-                    get_priority_pages, get_brand_clusters)
+                    get_priority_pages, get_brand_clusters, get_gsc_credentials_file)
 
 
 def parse_args():
@@ -116,8 +116,11 @@ def resolve_ai_credentials(provider_arg: str = None, api_key_arg: str = None) ->
 
 
 def _has_gsc_credentials() -> bool:
-    from config import BASE_DIR
-    return (BASE_DIR / "gsc_credentials.json").exists()
+    return get_gsc_credentials_file().exists()
+
+
+def _using_runtime_site_config() -> bool:
+    return bool(os.environ.get("SEO_RUNTIME_SITE_CONFIG", ""))
 
 
 def _slugs_from_urls(urls: list) -> list:
@@ -211,6 +214,10 @@ def run_gsc(folder: str = None, urls: list = None) -> dict:
                 print(f"   ! API GSC: {raw['error']} — usando CSV como fallback")
         except Exception as exc:
             print(f"   ! API GSC falhou ({exc}) — usando CSV como fallback")
+
+    if result is None and _using_runtime_site_config():
+        print("   x GSC API indisponivel para o site ativo. CSV local nao e usado em contas de usuarios.")
+        return {}
 
     # Fallback: CSV exports
     if result is None:
@@ -402,7 +409,8 @@ def run_snippets(onpage_results: list) -> dict:
     from modules import serp_snippets
     import json
     pending = []
-    pending_file = Path("pending_changes.json")
+    from config import get_scoped_runtime_file
+    pending_file = get_scoped_runtime_file("pending_changes.json", "publishing")
     if pending_file.exists():
         try:
             pending = json.loads(pending_file.read_text(encoding="utf-8"))
@@ -477,7 +485,7 @@ def run_blog_ideas(
         print(f"       query: {idea.get('primary_query', '')}")
         if idea.get("_ai_error"):
             print(f"       IA indisponivel: {idea.get('_ai_error')}")
-    print(f"   ok ideias salvas em blog_ideas.json")
+    print("   ok ideias salvas no arquivo de ideias do site atual")
     return ideas
 
 
@@ -490,7 +498,7 @@ def run_ai_analysis(results: dict, provider: str = None, api_key: str = None) ->
     print(f"   resumo: {analysis.get('summary', '')[:180]}")
     for action in analysis.get("next_actions", [])[:5]:
         print(f"   - {action}")
-    print("   ok analise salva em reports/ai_analysis_latest.json")
+    print("   ok analise salva no arquivo de analise do site atual")
     return analysis
 
 
@@ -520,7 +528,7 @@ def run_ai_insights(results: dict, provider: str = None, api_key: str = None) ->
     content_gaps = insights.get("content_gaps", [])
     snippets = insights.get("snippet_rewrites", [])
     print(f"   ok {len(content_gaps)} gaps de conteudo | {len(snippets)} rewrites de snippet sugeridos")
-    print("   ok insights salvos em reports/ai_insights_latest.json")
+    print("   ok insights salvos no arquivo de insights do site atual")
     return insights
 
 

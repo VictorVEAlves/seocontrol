@@ -3,21 +3,18 @@ Google Search Console API — trend detection & live performance data.
 
 Uses requests + google-auth directly (no httplib2) to avoid Windows proxy issues.
 
-Setup (one-time):
-  1. Go to https://console.cloud.google.com/ → create project
-  2. Enable "Google Search Console API"
-  3. Create OAuth 2.0 credentials (type: Desktop app)
-  4. Download JSON → save as gsc_credentials.json in project root
-  5. Configure a propriedade GSC em /settings ou GSC_PROPERTY_URL no .env
-  6. Run once: python run.py --module gsc-api
-     → browser opens for auth → token saved to .gsc_token.json
+Web setup:
+  Users connect in /settings with the server-level Google OAuth app.
+  Tokens are saved per user/site and reused by the GSC modules.
 
-After that, runs fully automatically.
+CLI/local fallback:
+  A local gsc_credentials.json can still be used for developer-only scripts.
 """
 
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import time
 from datetime import date, timedelta
@@ -26,7 +23,8 @@ from urllib.parse import quote
 
 from config import (BASE_DIR, GEMINI_API_KEY,
                     disable_broken_local_proxy, get_site_url, get_gsc_property, get_site_name,
-                    get_brand_clusters)
+                    get_brand_clusters, get_gsc_credentials_file, get_gsc_token_file,
+                    get_site_id, get_site_owner_user_id)
 
 
 def _nuke_proxies() -> None:
@@ -49,9 +47,26 @@ disable_broken_local_proxy()
 _nuke_proxies()
 _make_stdout_safe()
 
-CREDENTIALS_FILE = BASE_DIR / "gsc_credentials.json"
-TOKEN_FILE       = BASE_DIR / ".gsc_token.json"
 SCOPES           = ["https://www.googleapis.com/auth/webmasters.readonly"]
+
+
+def _credentials_file() -> Path:
+    return get_gsc_credentials_file()
+
+
+def _token_file() -> Path:
+    return get_gsc_token_file()
+
+
+def _dashboard_cache_file(kind: str, period_days: int) -> Path:
+    raw_key = "|".join([
+        get_site_owner_user_id() or "local",
+        get_site_id() or "",
+        get_gsc_property() or get_site_url() or "default",
+    ])
+    site_key = hashlib.sha1(raw_key.encode("utf-8")).hexdigest()
+    folder = BASE_DIR / ".runtime"
+    return folder / f"dashboard_{kind}_{site_key}_{period_days}d.json"
 
 
 def _gsc_query_url() -> str:
@@ -90,9 +105,11 @@ def _get_credentials(silent: bool = False):
     import requests as _req
 
     creds = None
-    if TOKEN_FILE.exists():
+    token_file = _token_file()
+    credentials_file = _credentials_file()
+    if token_file.exists():
         try:
-            creds = Credentials.from_authorized_user_file(str(TOKEN_FILE), SCOPES)
+            creds = Credentials.from_authorized_user_file(str(token_file), SCOPES)
         except Exception:
             pass
 
@@ -108,14 +125,15 @@ def _get_credentials(silent: bool = False):
                 raise GSCAuthRequired(
                     "GSC não autenticado. Acesse Configurações → Google Search Console → Conectar com Google."
                 )
-            if not CREDENTIALS_FILE.exists():
+            if not credentials_file.exists():
                 raise FileNotFoundError(
-                    "Credenciais GSC não encontradas. Acesse Configurações para fazer upload do gsc_credentials.json."
+                    "GSC não conectado. Acesse Configurações e clique em Conectar com Google."
                 )
-            flow = InstalledAppFlow.from_client_secrets_file(str(CREDENTIALS_FILE), SCOPES)
+            flow = InstalledAppFlow.from_client_secrets_file(str(credentials_file), SCOPES)
             creds = flow.run_local_server(port=0)
 
-        TOKEN_FILE.write_text(creds.to_json(), encoding="utf-8")
+        token_file.parent.mkdir(parents=True, exist_ok=True)
+        token_file.write_text(creds.to_json(), encoding="utf-8")
 
     return creds
 
@@ -141,7 +159,9 @@ def _build_session(silent: bool = False):
     if not creds.valid:
         auth_req = google.auth.transport.requests.Request(session=base)
         creds.refresh(auth_req)
-        TOKEN_FILE.write_text(creds.to_json(), encoding="utf-8")
+        token_file = _token_file()
+        token_file.parent.mkdir(parents=True, exist_ok=True)
+        token_file.write_text(creds.to_json(), encoding="utf-8")
 
     authed = google.auth.transport.requests.AuthorizedSession(creds)
     authed.trust_env = False
@@ -783,7 +803,7 @@ def get_dashboard_data(period_days: int = 28) -> dict:
     """Fetch GSC performance data only (no Gemini). Fast — cached 1h."""
     import time as _time
 
-    cache_file = BASE_DIR / f".dashboard_cache_{period_days}d.json"
+    cache_file = _dashboard_cache_file("gsc", period_days)
     try:
         if cache_file.exists():
             cached = json.loads(cache_file.read_text(encoding="utf-8"))
@@ -930,6 +950,7 @@ def get_dashboard_data(period_days: int = 28) -> dict:
         "_cached_at":   _time.time(),
     }
     try:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
         cache_file.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
     except Exception:
         pass
@@ -940,7 +961,7 @@ def get_dashboard_ai(period_days: int = 28) -> dict:
     """Generate Gemini analysis for the dashboard. Loads cached GSC data — runs independently."""
     import time as _time
 
-    ai_cache = BASE_DIR / f".dashboard_ai_{period_days}d.json"
+    ai_cache = _dashboard_cache_file("ai", period_days)
     try:
         if ai_cache.exists():
             cached = json.loads(ai_cache.read_text(encoding="utf-8"))
@@ -968,7 +989,7 @@ def get_dashboard_ai(period_days: int = 28) -> dict:
     prev_pos    = kpis.get("position",    {}).get("prev", 0.0)
 
     from config import get_provider_api_key
-    gemini_key = GEMINI_API_KEY or get_provider_api_key("gemini") or os.environ.get("GEMINI_API_KEY", "")
+    gemini_key = get_provider_api_key("gemini") or GEMINI_API_KEY or os.environ.get("GEMINI_API_KEY", "")
 
     if not gemini_key:
         return {"ai_summary": "", "ai_error": "GEMINI_API_KEY não configurada"}
@@ -1061,6 +1082,7 @@ Responda apenas em PT-BR. Sem texto fora das seções definidas."""
 
     out = {"ai_summary": ai_summary, "ai_error": ai_error, "_cached_at": _time.time()}
     try:
+        ai_cache.parent.mkdir(parents=True, exist_ok=True)
         ai_cache.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
     except Exception:
         pass

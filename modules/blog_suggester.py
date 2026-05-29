@@ -19,11 +19,11 @@ from datetime import datetime
 from pathlib import Path
 from collections import defaultdict
 
-from config import (BASE_DIR, get_brand_aliases, get_business_context,
+from config import (get_brand_aliases, get_business_context,
                     get_default_provider, get_product_terms, get_provider_api_key,
-                    get_site_name, get_site_url)
+                    get_scoped_runtime_file, get_site_name, get_site_url)
 
-BRIEFS_FILE = BASE_DIR / "blog_briefs.json"
+BRIEFS_FILE = get_scoped_runtime_file("blog_briefs.json", "content")
 
 # ── Stopwords PT-BR para limpeza de queries ───────────────────────────────────
 STOPWORDS = {

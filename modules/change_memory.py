@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
-from config import BASE_DIR
+from config import BASE_DIR, using_runtime_site_config
 
 
 DEFAULT_CHANGELOG_CANDIDATES = [
@@ -135,6 +135,9 @@ def find_changelog_path(path: str | os.PathLike | None = None) -> Path | None:
         candidate = Path(env_path)
         if candidate.exists():
             return candidate
+
+    if using_runtime_site_config():
+        return None
 
     for candidate in DEFAULT_CHANGELOG_CANDIDATES:
         if candidate.exists():

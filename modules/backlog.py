@@ -138,7 +138,7 @@ def _from_onpage(onpage: list) -> list:
         if not issues and not warnings:
             continue
 
-        severity = len(issues) * 18 + len(warnings) * 5
+        severity = len(issues) * 15 + len(warnings) * 5
         impact = min(90, 20 + severity)
         effort = 2 + min(4, len(issues) + len(warnings) / 2)
         target = page.get("url", "")

@@ -17,6 +17,7 @@ Usage via run.py:
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 import re
@@ -27,9 +28,20 @@ from typing import Any
 
 import requests
 
-from config import BASE_DIR, get_brand_clusters, get_business_context, get_site_url
+from config import (BASE_DIR, get_brand_clusters, get_business_context, get_site_url,
+                    get_site_id, get_site_owner_user_id)
 
 INSIGHTS_FILE = BASE_DIR / "reports" / "ai_insights_latest.json"
+
+
+def _insights_file() -> Path:
+    user_id = get_site_owner_user_id()
+    site_id = get_site_id()
+    if user_id or site_id:
+        raw_key = "|".join([user_id or "local", site_id or "", get_site_url() or "default"])
+        key = hashlib.sha1(raw_key.encode("utf-8")).hexdigest()
+        return BASE_DIR / ".runtime" / "ai_insights" / f"ai_insights_{key}.json"
+    return INSIGHTS_FILE
 
 # ── Gemini call ───────────────────────────────────────────────────────────────
 
@@ -391,7 +403,7 @@ def run(
 
     # Always use Gemini key — this module only works with the Gemini REST API.
     # Ignore any generic provider key that may have been resolved upstream.
-    key = GEMINI_API_KEY or get_provider_api_key("gemini") or (api_key if provider == "gemini" else "")
+    key = get_provider_api_key("gemini") or GEMINI_API_KEY or (api_key if provider == "gemini" else "")
     if not key:
         return {
             "_ai_enhanced": False,
@@ -449,12 +461,13 @@ def run(
             task["brand_tier"] = "all"
 
     # Persist to disk
-    INSIGHTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    INSIGHTS_FILE.write_text(
+    insights_file = _insights_file()
+    insights_file.parent.mkdir(parents=True, exist_ok=True)
+    insights_file.write_text(
         json.dumps(data, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    print(f"    ok análise salva em {INSIGHTS_FILE.name}")
+    print(f"    ok análise salva em {insights_file.name}")
 
     return data
 
@@ -487,9 +500,10 @@ def insights_to_backlog_items(insights: dict) -> list[dict]:
 
 def load_latest() -> dict | None:
     """Load the most recent insights from disk."""
-    if INSIGHTS_FILE.exists():
+    insights_file = _insights_file()
+    if insights_file.exists():
         try:
-            return json.loads(INSIGHTS_FILE.read_text(encoding="utf-8"))
+            return json.loads(insights_file.read_text(encoding="utf-8"))
         except Exception:
             pass
     return None

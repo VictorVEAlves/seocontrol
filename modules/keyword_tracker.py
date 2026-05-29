@@ -16,12 +16,11 @@ import os
 from datetime import date, timedelta
 from urllib.parse import quote
 
-from config import BASE_DIR, disable_broken_local_proxy, get_brand_clusters, get_gsc_property, get_site_url
+from config import (disable_broken_local_proxy, get_brand_clusters, get_gsc_property,
+                    get_site_url, get_gsc_credentials_file, get_gsc_token_file)
 
 disable_broken_local_proxy()
 
-_CREDENTIALS_FILE = BASE_DIR / "gsc_credentials.json"
-_TOKEN_FILE       = BASE_DIR / ".gsc_token.json"
 _SCOPES           = ["https://www.googleapis.com/auth/webmasters.readonly"]
 
 _GSC_QUERY_URL = (
@@ -48,10 +47,12 @@ def _build_session():
     for k in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"]:
         os.environ.pop(k, None)
 
+    credentials_file = get_gsc_credentials_file()
+    token_file = get_gsc_token_file()
     creds = None
-    if _TOKEN_FILE.exists():
+    if token_file.exists():
         try:
-            creds = Credentials.from_authorized_user_file(str(_TOKEN_FILE), _SCOPES)
+            creds = Credentials.from_authorized_user_file(str(token_file), _SCOPES)
         except Exception:
             pass
 
@@ -61,14 +62,14 @@ def _build_session():
             session.trust_env = False
             creds.refresh(google.auth.transport.requests.Request(session=session))
         else:
-            if not _CREDENTIALS_FILE.exists():
+            if not credentials_file.exists():
                 raise FileNotFoundError(
-                    f"Arquivo {_CREDENTIALS_FILE.name} não encontrado.\n"
-                    "Download em: console.cloud.google.com → APIs → Credenciais"
+                    "GSC não conectado. Acesse Configurações e clique em Conectar com Google."
                 )
-            flow = InstalledAppFlow.from_client_secrets_file(str(_CREDENTIALS_FILE), _SCOPES)
+            flow = InstalledAppFlow.from_client_secrets_file(str(credentials_file), _SCOPES)
             creds = flow.run_local_server(port=0)
-        _TOKEN_FILE.write_text(creds.to_json(), encoding="utf-8")
+        token_file.parent.mkdir(parents=True, exist_ok=True)
+        token_file.write_text(creds.to_json(), encoding="utf-8")
 
     authed = google.auth.transport.requests.AuthorizedSession(creds)
     authed.trust_env = False

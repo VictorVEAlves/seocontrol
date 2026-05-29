@@ -3,14 +3,26 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from config import BASE_DIR, get_business_context, get_site_name, get_site_url
+from config import (BASE_DIR, get_business_context, get_site_name, get_site_url,
+                    get_site_id, get_site_owner_user_id)
 from modules.ai_layer import call_json
 
 AI_ANALYSIS_FILE = BASE_DIR / "reports" / "ai_analysis_latest.json"
+
+
+def _analysis_file() -> Path:
+    user_id = get_site_owner_user_id()
+    site_id = get_site_id()
+    if user_id or site_id:
+        raw_key = "|".join([user_id or "local", site_id or "", get_site_url() or "default"])
+        key = hashlib.sha1(raw_key.encode("utf-8")).hexdigest()
+        return BASE_DIR / ".runtime" / "ai_analysis" / f"ai_analysis_{key}.json"
+    return AI_ANALYSIS_FILE
 
 AI_ANALYSIS_SYSTEM = """Voce e um diretor de SEO tecnico e estrategico.
 
@@ -80,8 +92,9 @@ def compact_results(results: dict[str, Any]) -> dict[str, Any]:
 
 
 def save_analysis(analysis: dict[str, Any]) -> None:
-    AI_ANALYSIS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    AI_ANALYSIS_FILE.write_text(
+    analysis_file = _analysis_file()
+    analysis_file.parent.mkdir(parents=True, exist_ok=True)
+    analysis_file.write_text(
         json.dumps(analysis, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )

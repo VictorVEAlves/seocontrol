@@ -5,9 +5,9 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
-from config import BASE_DIR, get_brand_aliases, get_business_context, get_product_terms, get_site_name, get_site_url
+from config import get_brand_aliases, get_business_context, get_product_terms, get_scoped_runtime_file, get_site_name, get_site_url
 
-IDEAS_FILE = BASE_DIR / "blog_ideas.json"
+IDEAS_FILE = get_scoped_runtime_file("blog_ideas.json", "content")
 AI_BATCH_SIZE = 3
 
 def _brand_keywords() -> set[str]:

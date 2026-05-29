@@ -1,18 +1,15 @@
 import app as dashboard
 
 
-def test_ai_insights_command_accepts_selected_comparison():
-    cmd = dashboard.build_tool_command({
-        "module": "ai-insights",
-        "comparison": "month",
-    })
+def test_ai_insights_tool_is_removed_from_standalone_tools():
+    html = dashboard.app.test_client().get("/tools").get_data(as_text=True)
 
-    assert "--comparison" in cmd
-    assert cmd[cmd.index("--comparison") + 1] == "month"
+    assert 'data-module="ai-insights"' not in html
+    assert "/ai-insights" not in html
 
 
-def test_ai_insights_tool_exposes_comparison_field():
-    html = dashboard.app.test_client().get("/tools?module=ai-insights").get_data(as_text=True)
+def test_ai_insights_page_redirects_to_full_audit():
+    response = dashboard.app.test_client().get("/ai-insights", follow_redirects=False)
 
-    assert 'data-module="ai-insights" data-tags="comparison"' in html
-    assert "AI Insights" in html
+    assert response.status_code == 302
+    assert response.headers["Location"].startswith("/full-audit")

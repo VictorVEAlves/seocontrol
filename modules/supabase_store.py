@@ -17,16 +17,20 @@ from urllib.parse import urlparse
 from dotenv import load_dotenv
 from supabase import Client, create_client
 
-from config import get_site_name, get_site_url
+from config import get_site_id, get_site_name, get_site_owner_user_id, get_site_url, using_runtime_site_config
 
 load_dotenv()
 
 
 def _client() -> Client:
     url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_KEY")
+    service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+    key = service_key or os.environ.get("SUPABASE_KEY")
     if not url or not key:
         raise RuntimeError("Configure SUPABASE_URL e SUPABASE_KEY no .env.")
+    auth_required = os.environ.get("AUTH_REQUIRED", "1").lower() not in {"0", "false", "no"}
+    if (auth_required or using_runtime_site_config()) and not service_key:
+        raise RuntimeError("SUPABASE_SERVICE_ROLE_KEY e obrigatorio para salvar dados no modo multiusuario.")
     return create_client(url, key)
 
 
@@ -149,12 +153,55 @@ def _url_type(path: str) -> str:
 
 
 def _upsert_site(sb: Client, name: str, base_url: str) -> str:
+    configured_site_id = get_site_id()
     payload = {"name": name, "base_url": base_url, "updated_at": _now()}
-    res = sb.table("sites").upsert(payload, on_conflict="base_url").execute()
+    owner_user_id = get_site_owner_user_id()
+    if configured_site_id:
+        if owner_user_id:
+            payload["owner_user_id"] = owner_user_id
+        try:
+            current = sb.table("sites").select("id, owner_user_id").eq("id", configured_site_id).limit(1).execute().data or []
+            if current:
+                current_owner = str(current[0].get("owner_user_id") or "")
+                if owner_user_id and current_owner and current_owner != owner_user_id:
+                    raise RuntimeError("Site ativo pertence a outro usuario.")
+                sb.table("sites").update(payload).eq("id", configured_site_id).execute()
+                return configured_site_id
+            insert_payload = {"id": configured_site_id, **payload}
+            sb.table("sites").insert(insert_payload).execute()
+            return configured_site_id
+        except Exception as exc:
+            raise RuntimeError(
+                "Site ativo nao existe ou nao esta isolado corretamente no banco. "
+                "Reabra Configuracoes, salve o site novamente e execute supabase/user_isolation_migration.sql se necessario."
+            ) from exc
+    if owner_user_id:
+        payload["owner_user_id"] = owner_user_id
+        try:
+            res = sb.table("sites").upsert(payload, on_conflict="owner_user_id,base_url").execute()
+            if res.data:
+                return res.data[0]["id"]
+            found = (
+                sb.table("sites")
+                .select("id")
+                .eq("owner_user_id", owner_user_id)
+                .eq("base_url", base_url)
+                .single()
+                .execute()
+            )
+            return found.data["id"]
+        except Exception as exc:
+            raise RuntimeError(
+                "Banco sem isolamento por usuário na tabela sites. Execute supabase/user_isolation_migration.sql."
+            ) from exc
+    found = sb.table("sites").select("id").eq("base_url", base_url).limit(1).execute()
+    if found.data:
+        return found.data[0]["id"]
+    res = sb.table("sites").insert(payload).execute()
     if res.data:
         return res.data[0]["id"]
-    found = sb.table("sites").select("id").eq("base_url", base_url).single().execute()
-    return found.data["id"]
+    found = sb.table("sites").select("id").eq("base_url", base_url).limit(1).execute()
+    return found.data[0]["id"]
 
 
 def _upsert_url(sb: Client, site_id: str, url: str, is_priority: bool = False) -> str | None:
@@ -595,13 +642,13 @@ def _sync_recommendation_items(sb: Client, site_id: str, run_id: str, items: lis
                                 "impact", "confidence", "effort", "priority", "owner")
                 }
                 update_payload["evidence"] = _clean(merged_evidence)
-                sb.table("recommendations").update(update_payload).eq("id", blocking["id"]).execute()
+                sb.table("recommendations").update(update_payload).eq("site_id", site_id).eq("id", blocking["id"]).execute()
                 refreshed_ids.add(blocking.get("id"))
             for duplicate in matches:
                 if duplicate.get("id") == blocking.get("id"):
                     continue
                 if str(duplicate.get("status") or "open") in {"open", "pending"}:
-                    sb.table("recommendations").delete().eq("id", duplicate.get("id")).execute()
+                    sb.table("recommendations").delete().eq("site_id", site_id).eq("id", duplicate.get("id")).execute()
             continue
 
         rows.append(payload)
@@ -614,7 +661,7 @@ def _sync_recommendation_items(sb: Client, site_id: str, run_id: str, items: lis
             and row.get("source") in seen_sources
             and _row_signature(row) not in seen_new_signatures
         ):
-            sb.table("recommendations").delete().eq("id", row.get("id")).execute()
+            sb.table("recommendations").delete().eq("site_id", site_id).eq("id", row.get("id")).execute()
 
     if rows:
         sb.table("recommendations").insert(rows).execute()

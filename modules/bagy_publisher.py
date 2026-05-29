@@ -15,10 +15,10 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
-from config import BASE_DIR
+from config import get_scoped_runtime_file
 
-PENDING_FILE = BASE_DIR / "pending_changes.json"
-LOG_FILE     = BASE_DIR / "publish_log.json"
+PENDING_FILE = get_scoped_runtime_file("pending_changes.json", "publishing")
+LOG_FILE     = get_scoped_runtime_file("publish_log.json", "publishing")
 
 # URL base do painel da Bagy — ajuste se necessário
 BAGY_ADMIN_URL  = "https://app.bagy.com.br"

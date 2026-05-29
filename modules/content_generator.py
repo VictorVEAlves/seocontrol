@@ -30,12 +30,13 @@ from pathlib import Path
 import requests
 
 from config import (
-    BASE_DIR, OPENROUTER_MODEL, OPENROUTER_FALLBACK_MODELS,
+    OPENROUTER_MODEL, OPENROUTER_FALLBACK_MODELS,
     get_business_context, get_content_guidelines, get_default_provider,
-    get_provider_api_key, get_provider_sequence, get_site_name, get_site_url
+    get_provider_api_key, get_provider_sequence, get_scoped_runtime_file,
+    get_site_name, get_site_url
 )
 
-PENDING_FILE = BASE_DIR / "pending_changes.json"
+PENDING_FILE = get_scoped_runtime_file("pending_changes.json", "publishing")
 SYSTEM_PROMPT_OVERRIDE: str | None = None
 
 # ── System prompt (igual para todos os provedores) ────────────────────────────

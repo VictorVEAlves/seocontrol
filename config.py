@@ -1,5 +1,7 @@
 from pathlib import Path
 import os
+import hashlib
+from contextvars import ContextVar
 
 # Pasta raiz do projeto (onde este arquivo está)
 BASE_DIR = Path(__file__).parent.resolve()
@@ -66,10 +68,26 @@ PROVIDER_API_KEYS = {
     "anthropic": ANTHROPIC_API_KEY,
 }
 
+PROVIDER_ENV_KEYS = {
+    "openrouter": "OPENROUTER_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "mistral": "MISTRAL_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+}
+
 
 def get_provider_api_key(provider: str = "") -> str:
     """Return the configured API key for a specific provider."""
-    return PROVIDER_API_KEYS.get(provider or "", "")
+    provider = provider or ""
+    cfg = _load_site_config()
+    site_keys = cfg.get("ai_api_keys") if isinstance(cfg.get("ai_api_keys"), dict) else {}
+    if site_keys.get(provider):
+        return str(site_keys[provider])
+    env_key = PROVIDER_ENV_KEYS.get(provider)
+    if env_key and cfg.get(env_key):
+        return str(cfg[env_key])
+    return PROVIDER_API_KEYS.get(provider, "")
 
 
 def get_provider_sequence(preferred: str = "") -> list[tuple[str, str]]:
@@ -113,9 +131,35 @@ SITE_URL = os.environ.get("SITE_URL", "").rstrip("/")
 
 # ── Dynamic site configuration ────────────────────────────────────────────────
 _SITE_CONFIG_FILE = BASE_DIR / ".site_config.json"
+_RUNTIME_SITE_CONFIG: ContextVar[dict | None] = ContextVar("runtime_site_config", default=None)
+
+
+def set_runtime_site_config(config: dict | None) -> None:
+    """Set the active site configuration for the current request/job context."""
+    if config is None:
+        _RUNTIME_SITE_CONFIG.set(None)
+    else:
+        _RUNTIME_SITE_CONFIG.set(config if isinstance(config, dict) else {})
+
+
+def clear_runtime_site_config() -> None:
+    """Clear request/job scoped site configuration and use local fallbacks again."""
+    _RUNTIME_SITE_CONFIG.set(None)
 
 
 def _load_site_config() -> dict:
+    runtime_cfg = _RUNTIME_SITE_CONFIG.get()
+    if runtime_cfg is not None:
+        return runtime_cfg
+    runtime_env = os.environ.get("SEO_RUNTIME_SITE_CONFIG", "")
+    if runtime_env:
+        try:
+            import json as _j
+            parsed = _j.loads(runtime_env)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
     try:
         import json as _j
         if _SITE_CONFIG_FILE.exists():
@@ -125,9 +169,21 @@ def _load_site_config() -> dict:
     return {}
 
 
+def _using_runtime_site_config() -> bool:
+    if _RUNTIME_SITE_CONFIG.get() is not None:
+        return True
+    return bool(os.environ.get("SEO_RUNTIME_SITE_CONFIG", ""))
+
+
+def using_runtime_site_config() -> bool:
+    return _using_runtime_site_config()
+
+
 def get_site_url() -> str:
     """Return the configured site URL. Empty means the user has not configured a client yet."""
     cfg = _load_site_config()
+    if _using_runtime_site_config():
+        return str(cfg.get("site_url") or "").rstrip("/")
     url = cfg.get("site_url") or os.environ.get("SITE_URL") or SITE_URL
     return url.rstrip("/")
 
@@ -135,12 +191,49 @@ def get_site_url() -> str:
 def get_gsc_property() -> str:
     """Return the GSC property URL (always ends with '/')."""
     cfg = _load_site_config()
-    prop = (cfg.get("gsc_property")
-            or os.environ.get("GSC_PROPERTY_URL")
-            or ((get_site_url() + "/") if get_site_url() else ""))
+    if _using_runtime_site_config():
+        site_url = get_site_url()
+        prop = cfg.get("gsc_property") or ((site_url + "/") if site_url else "")
+    else:
+        prop = (cfg.get("gsc_property")
+                or os.environ.get("GSC_PROPERTY_URL")
+                or ((get_site_url() + "/") if get_site_url() else ""))
     if not prop:
         return ""
     return prop if prop.endswith("/") else prop + "/"
+
+
+def _resolve_runtime_path(value: str, fallback: Path) -> Path:
+    path = Path(str(value or fallback))
+    return path if path.is_absolute() else BASE_DIR / path
+
+
+def get_gsc_credentials_file() -> Path:
+    """Return the OAuth client JSON path for the active user/site."""
+    cfg = _load_site_config()
+    if _using_runtime_site_config():
+        return _resolve_runtime_path(
+            cfg.get("gsc_credentials_file"),
+            BASE_DIR / ".runtime" / "gsc" / "unconfigured_credentials.json",
+        )
+    return _resolve_runtime_path(
+        cfg.get("gsc_credentials_file") or os.environ.get("GSC_CREDENTIALS_FILE"),
+        BASE_DIR / "gsc_credentials.json",
+    )
+
+
+def get_gsc_token_file() -> Path:
+    """Return the OAuth token JSON path for the active user/site."""
+    cfg = _load_site_config()
+    if _using_runtime_site_config():
+        return _resolve_runtime_path(
+            cfg.get("gsc_token_file"),
+            BASE_DIR / ".runtime" / "gsc" / "unconfigured_token.json",
+        )
+    return _resolve_runtime_path(
+        cfg.get("gsc_token_file") or os.environ.get("GSC_TOKEN_FILE"),
+        BASE_DIR / ".gsc_token.json",
+    )
 
 
 def get_site_name() -> str:
@@ -153,6 +246,30 @@ def get_site_name() -> str:
     # Strip www. prefix for display
     name = host[4:] if host.startswith("www.") else host
     return name or "Site não configurado"
+
+
+def get_site_id() -> str:
+    """Return the active site id from request/job-scoped configuration."""
+    cfg = _load_site_config()
+    return str(cfg.get("site_id") or "")
+
+
+def get_site_owner_user_id() -> str:
+    """Return the authenticated owner id for the active site when available."""
+    cfg = _load_site_config()
+    return str(cfg.get("user_id") or "")
+
+
+def get_scoped_runtime_file(filename: str, folder: str = "scoped") -> Path:
+    """Return a per-user/site file path when running with request/job config."""
+    cfg = _load_site_config()
+    user_id = str(cfg.get("user_id") or "")
+    site_id = str(cfg.get("site_id") or "")
+    if user_id or site_id:
+        raw_key = "|".join([user_id or "local", site_id or "", str(cfg.get("site_url") or "default")])
+        key = hashlib.sha1(raw_key.encode("utf-8")).hexdigest()
+        return BASE_DIR / ".runtime" / folder / key / filename
+    return BASE_DIR / filename
 
 
 def save_site_config(**kwargs) -> None:

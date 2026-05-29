@@ -1,16 +1,14 @@
 from modules.supabase_store import _client
+from config import get_site_id
 
 
 def run(limit: int = 2) -> dict:
     sb = _client()
-    runs = (
-        sb.table("crawl_runs")
-        .select("id, created_at, run_type, summary")
-        .order("created_at", desc=True)
-        .limit(limit)
-        .execute()
-        .data
-    )
+    query = sb.table("crawl_runs").select("id, created_at, run_type, summary")
+    site_id = get_site_id()
+    if site_id:
+        query = query.eq("site_id", site_id)
+    runs = query.order("created_at", desc=True).limit(limit).execute().data
     if len(runs) < 2:
         return {"status": "insufficient_data", "runs": runs, "regressions": []}
 

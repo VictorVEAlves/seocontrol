@@ -1,4 +1,5 @@
 import html
+import hashlib
 import json as _json_mod
 import os
 import queue as _queue_mod
@@ -8,14 +9,17 @@ import threading
 import uuid
 from collections import OrderedDict
 from datetime import datetime, timezone
-from urllib.parse import quote
+from pathlib import Path
+from urllib.parse import quote, urlparse
 
 from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, redirect, request, session, stream_with_context, url_for
 from supabase import Client, create_client
 
 from config import (disable_broken_local_proxy, BASE_DIR,
-                    get_site_url, get_gsc_property, get_site_name, save_site_config)
+                    get_site_url, get_gsc_property, get_site_name, save_site_config,
+                    set_runtime_site_config, clear_runtime_site_config,
+                    get_gsc_credentials_file, get_gsc_token_file)
 
 load_dotenv()
 disable_broken_local_proxy()
@@ -28,22 +32,373 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", "seo-audit-local-dev-2024")
+app.secret_key = os.environ.get("FLASK_SECRET_KEY") or "seo-audit-local-dev-2024"
 
 # Allow OAuth over plain HTTP in local development
 os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")
+os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 
 # ── Supabase singleton ────────────────────────────────────────────────────────
 
+@app.before_request
+def _clear_runtime_site_before_request():
+    clear_runtime_site_config()
+
+
+@app.teardown_request
+def _clear_runtime_site_after_request(_exc=None):
+    clear_runtime_site_config()
+
+
 _supabase: Client | None = None
+_supabase_public: Client | None = None
 
 
 def get_supabase() -> Client:
     global _supabase
     if _supabase is None:
-        key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_KEY")
+        service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+        auth_required = os.environ.get("AUTH_REQUIRED", "1").lower() not in {"0", "false", "no"}
+        if auth_required and not service_key:
+            raise RuntimeError("SUPABASE_SERVICE_ROLE_KEY e obrigatorio no servidor multiusuario.")
+        key = service_key or os.environ.get("SUPABASE_KEY")
         _supabase = create_client(os.environ["SUPABASE_URL"], key)
     return _supabase
+
+
+def get_supabase_public() -> Client:
+    global _supabase_public
+    if _supabase_public is None:
+        _supabase_public = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+    return _supabase_public
+
+
+PUBLIC_PATHS = {
+    "/login",
+    "/signup",
+    "/logout",
+}
+
+
+def _auth_required() -> bool:
+    return os.environ.get("AUTH_REQUIRED", "1").lower() not in {"0", "false", "no"}
+
+
+def _current_user_id() -> str:
+    return str(session.get("user_id") or "")
+
+
+def _current_user_email() -> str:
+    return str(session.get("user_email") or "")
+
+
+def _current_site_id() -> str:
+    return str(session.get("active_site_id") or "")
+
+
+def _has_auth_session() -> bool:
+    return bool(session.get("user_id"))
+
+
+def _session_matches_current_supabase() -> bool:
+    return bool(session.get("auth_project_url")) and session.get("auth_project_url") == os.environ.get("SUPABASE_URL", "")
+
+
+def _is_authenticated() -> bool:
+    return _has_auth_session() and _session_matches_current_supabase()
+
+
+def _clear_stale_auth_session(next_url: str = ""):
+    session.clear()
+    session["auth_notice"] = "Sessão antiga ou de outro banco detectada. Faça login novamente."
+    return redirect(url_for("login", next=next_url or request.path))
+
+
+def _normalize_site_url(value: str) -> str:
+    url = str(value or "").strip().rstrip("/")
+    if url and not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    return url
+
+
+def _default_site_name(site_url: str) -> str:
+    host = urlparse(site_url).netloc or site_url
+    return host[4:] if host.startswith("www.") else host
+
+
+def _storage_key(*parts: str) -> str:
+    raw = ":".join(str(part or "") for part in parts if str(part or ""))
+    return hashlib.sha1((raw or "local").encode("utf-8")).hexdigest()
+
+
+def _user_site_gsc_paths(user_id: str, site_id: str) -> dict:
+    key = _storage_key(user_id, site_id)
+    folder = BASE_DIR / ".runtime" / "gsc"
+    return {
+        "gsc_credentials_file": str(folder / f"credentials_{key}.json"),
+        "gsc_token_file": str(folder / f"token_{key}.json"),
+    }
+
+
+def _site_config_from_row(row: dict | None) -> dict:
+    if not row:
+        return {}
+    settings = row.get("settings") if isinstance(row.get("settings"), dict) else {}
+    site_url = row.get("site_url") or settings.get("site_url") or ""
+    cfg = dict(settings)
+    cfg.update({
+        "site_id": row.get("site_id") or row.get("id"),
+        "user_id": row.get("user_id") or settings.get("user_id"),
+        "site_url": site_url,
+        "site_name": row.get("site_name") or settings.get("site_name") or _default_site_name(site_url),
+    })
+    if row.get("user_id") and cfg.get("site_id"):
+        cfg.update(_user_site_gsc_paths(str(row["user_id"]), str(cfg["site_id"])))
+    return cfg
+
+
+def _load_user_sites(user_id: str | None = None) -> list[dict]:
+    uid = user_id or _current_user_id()
+    if not uid:
+        return []
+    try:
+        rows = (
+            get_supabase().table("user_site_settings")
+            .select("id, user_id, site_id, site_url, site_name, settings, updated_at, created_at")
+            .eq("user_id", uid)
+            .order("updated_at", desc=True)
+            .execute().data
+            or []
+        )
+        return rows
+    except Exception:
+        return []
+
+
+def _load_active_site_config() -> dict:
+    uid = _current_user_id()
+    if not uid:
+        return {}
+    sites = _load_user_sites(uid)
+    if not sites:
+        return {}
+    active_id = str(session.get("active_site_id") or "")
+    row = next((site for site in sites if str(site.get("site_id")) == active_id), None) if active_id else None
+    row = row or sites[0]
+    if row.get("site_id"):
+        session["active_site_id"] = str(row["site_id"])
+    return _site_config_from_row(row)
+
+
+def _save_user_site_config(config: dict) -> str:
+    uid = _current_user_id()
+    if not uid:
+        raise RuntimeError("Usuário não autenticado.")
+    site_url = _normalize_site_url(config.get("site_url", ""))
+    if not site_url:
+        raise ValueError("Informe a URL do site.")
+    site_name = str(config.get("site_name") or _default_site_name(site_url)).strip()
+    sb = get_supabase()
+
+    site_payload = {
+        "owner_user_id": uid,
+        "name": site_name or _default_site_name(site_url),
+        "base_url": site_url,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    site_id = "" if config.get("_new_site") else str(config.get("site_id") or _current_site_id() or "")
+    if site_id:
+        owned = (
+            sb.table("user_site_settings")
+            .select("site_id")
+            .eq("user_id", uid)
+            .eq("site_id", site_id)
+            .limit(1)
+            .execute().data
+            or []
+        )
+        if not owned:
+            site_id = ""
+
+    if not site_id:
+        existing = (
+            sb.table("user_site_settings")
+            .select("site_id")
+            .eq("user_id", uid)
+            .eq("site_url", site_url)
+            .limit(1)
+            .execute().data
+            or []
+        )
+        site_id = str(existing[0]["site_id"]) if existing else ""
+
+    try:
+        if site_id:
+            current_site = sb.table("sites").select("id, owner_user_id").eq("id", site_id).limit(1).execute().data or []
+            if current_site:
+                current_owner = str(current_site[0].get("owner_user_id") or "")
+                if current_owner and current_owner != uid:
+                    site_id = ""
+                else:
+                    sb.table("sites").update(site_payload).eq("id", site_id).execute()
+            else:
+                site_id = ""
+        if not site_id:
+            site_res = sb.table("sites").upsert(site_payload, on_conflict="owner_user_id,base_url").execute()
+            site_id = str(site_res.data[0]["id"]) if site_res.data else ""
+            if not site_id:
+                site_found = (
+                    sb.table("sites")
+                    .select("id")
+                    .eq("owner_user_id", uid)
+                    .eq("base_url", site_url)
+                    .single()
+                    .execute()
+                )
+                site_id = str(site_found.data["id"])
+    except Exception as exc:
+        raise RuntimeError(
+            "Banco sem isolamento por usuário na tabela sites. Execute supabase/user_isolation_migration.sql "
+            "ou recrie o banco com supabase/full_setup.sql atualizado."
+        ) from exc
+
+    settings = dict(config)
+    settings["site_url"] = site_url
+    settings["site_name"] = site_name
+    settings["gsc_property"] = settings.get("gsc_property") or ((site_url + "/") if site_url else "")
+    settings.update(_user_site_gsc_paths(uid, str(site_id)))
+    now = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "user_id": uid,
+        "site_id": site_id,
+        "site_url": site_url,
+        "site_name": site_name,
+        "settings": settings,
+        "updated_at": now,
+    }
+    sb.table("user_site_settings").upsert(payload, on_conflict="user_id,site_id").execute()
+    session["active_site_id"] = str(site_id)
+    set_runtime_site_config({"site_id": site_id, "user_id": uid, **settings})
+    return str(site_id)
+
+
+def _update_active_user_site_config(**updates) -> None:
+    cfg = _load_active_site_config()
+    if not cfg:
+        if _is_authenticated():
+            raise RuntimeError("Nenhum site ativo para atualizar.")
+        save_site_config(**updates)
+        return
+    cfg.update(updates)
+    _save_user_site_config(cfg)
+
+
+def _active_gsc_files() -> tuple[Path, Path]:
+    cfg = _load_active_site_config() if _is_authenticated() else {}
+    cred_file = Path(str(cfg.get("gsc_credentials_file") or get_gsc_credentials_file()))
+    token_file = Path(str(cfg.get("gsc_token_file") or get_gsc_token_file()))
+    return cred_file, token_file
+
+
+GSC_OAUTH_SCOPES = [
+    "https://www.googleapis.com/auth/webmasters.readonly",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "openid",
+]
+
+
+def _google_oauth_env() -> tuple[str, str]:
+    client_id = (
+        os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
+        or os.environ.get("GOOGLE_CLIENT_ID")
+        or os.environ.get("GSC_OAUTH_CLIENT_ID")
+        or ""
+    ).strip()
+    client_secret = (
+        os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET")
+        or os.environ.get("GOOGLE_CLIENT_SECRET")
+        or os.environ.get("GSC_OAUTH_CLIENT_SECRET")
+        or ""
+    ).strip()
+    return client_id, client_secret
+
+
+def _server_gsc_credentials_file() -> Path:
+    configured = os.environ.get("GSC_CREDENTIALS_FILE", "").strip()
+    path = Path(configured) if configured else (BASE_DIR / "gsc_credentials.json")
+    return path if path.is_absolute() else BASE_DIR / path
+
+
+def _google_oauth_ready() -> bool:
+    client_id, client_secret = _google_oauth_env()
+    return bool((client_id and client_secret) or _server_gsc_credentials_file().exists())
+
+
+def _build_gsc_oauth_flow(state: str | None = None):
+    from google_auth_oauthlib.flow import Flow as _Flow
+
+    client_id, client_secret = _google_oauth_env()
+    redirect_uri = (
+        os.environ.get("GOOGLE_OAUTH_REDIRECT_URI", "").strip()
+        or url_for("gsc_callback", _external=True)
+    )
+    if not client_id or not client_secret:
+        credentials_file = _server_gsc_credentials_file()
+        if not credentials_file.exists():
+            raise RuntimeError(
+                "OAuth do Google nao configurado no servidor. Defina GOOGLE_OAUTH_CLIENT_ID e GOOGLE_OAUTH_CLIENT_SECRET."
+            )
+        return _Flow.from_client_secrets_file(
+            str(credentials_file),
+            scopes=GSC_OAUTH_SCOPES,
+            state=state,
+            redirect_uri=redirect_uri,
+        )
+    client_config = {
+        "web": {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": [redirect_uri],
+        }
+    }
+    return _Flow.from_client_config(
+        client_config,
+        scopes=GSC_OAUTH_SCOPES,
+        state=state,
+        redirect_uri=redirect_uri,
+    )
+
+
+def _dashboard_setup_status() -> tuple[bool, str, dict]:
+    """Return whether the authenticated user's dashboard may load live GSC data."""
+    if not _is_authenticated():
+        return True, "", {}
+    cfg = _load_active_site_config()
+    if not cfg.get("site_url"):
+        return False, "Cadastre o site antes de carregar dados do Search Console.", cfg
+    if not cfg.get("gsc_property"):
+        return False, "Selecione a propriedade do Google Search Console nas Configurações.", cfg
+    token_file = Path(str(cfg.get("gsc_token_file") or ""))
+    if not token_file.exists():
+        return False, "Conecte o Google Search Console para este site antes de carregar o dashboard.", cfg
+    return True, "", cfg
+
+
+@app.before_request
+def _require_login_and_load_site():
+    path = request.path.rstrip("/") or "/"
+    if not _auth_required():
+        return None
+    if path in PUBLIC_PATHS:
+        return None
+    if _has_auth_session() and not _is_authenticated():
+        return _clear_stale_auth_session(request.full_path if request.query_string else request.path)
+    if not _is_authenticated():
+        return redirect(url_for("login", next=request.full_path if request.query_string else request.path))
+    set_runtime_site_config(_load_active_site_config())
+    return None
 
 
 # ── Tool job registry (capped to avoid memory growth) ────────────────────────
@@ -68,14 +423,18 @@ def _update_job(job_id: str, updates: dict) -> None:
 
 def _get_job(job_id: str) -> dict | None:
     with _jobs_lock:
-        return dict(TOOL_JOBS.get(job_id) or {}) or None
+        job = dict(TOOL_JOBS.get(job_id) or {}) or None
+    if not job:
+        return None
+    if _auth_required() and job.get("user_id") != _current_user_id():
+        return None
+    return job
 
 
 # ── Allowed modules ───────────────────────────────────────────────────────────
 
 ALLOWED_TOOL_MODULES = {
     "blog-ideas":      "Ideias de blog por query",
-    "ai-insights":     "Insights estrategicos com Gemini",
     "onpage":          "Auditoria on-page",
     "gsc":             "Analise GSC",
     "gsc-api":         "Tendencias GSC ao vivo (API)",
@@ -96,6 +455,14 @@ TOP_TOOL_MODULES = {"blog-ideas", "ai-analysis", "suggest"}
 URL_TOOL_MODULES = {"onpage", "ai-analysis", "blog-ideas", "monitor"}
 MAX_PAGES_TOOL_MODULES = {"monitor", "broken-links"}
 GSC_FOLDER_MODULES = {"monitor", "ai-analysis", "generate", "suggest", "regression", "backlog", "gsc"}
+SITE_REQUIRED_TOOL_MODULES = set(ALLOWED_TOOL_MODULES) - {"doctor"}
+GSC_REQUIRED_TOOL_MODULES = {
+    "gsc",
+    "gsc-api",
+    "blog-ideas",
+    "keyword-tracker",
+    "cannibalization",
+}
 
 PAGE_SIZE = 50
 
@@ -804,6 +1171,12 @@ def page_shell(title: str, body: str, active: str = "") -> str:
 
     _site_name = get_site_name()
     _logo_init = (_site_name[:2].upper()) if _site_name else "SE"
+    _user_email = _current_user_email()
+    _auth_footer = (
+        f'<div style="font-size:11px;color:var(--muted);margin-bottom:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="{esc(_user_email)}">{esc(_user_email)}</div>'
+        f'<a href="/logout" style="font-size:12px;color:var(--muted);text-decoration:none">Sair</a>'
+        if _user_email else ""
+    )
     return f"""<!doctype html>
 <html lang="pt-BR">
 <head>
@@ -837,7 +1210,6 @@ def page_shell(title: str, body: str, active: str = "") -> str:
         {nav_link("/full-audit", "Auditoria Completa", "audit")}
         {nav_link("/tools", "Ferramentas", "tools")}
         {nav_link("/reports", "Relatórios", "reports")}
-        {nav_link("/ai-insights", "AI Insights", "insights")}
       </nav>
     </nav>
     <nav class="nav-section">
@@ -855,6 +1227,7 @@ def page_shell(title: str, body: str, active: str = "") -> str:
     </nav>
     <div class="sidebar-footer">
       {nav_link("/settings", "Configurações", "settings")}
+      {_auth_footer}
     </div>
   </aside>
   <div class="main">
@@ -925,7 +1298,7 @@ def build_tool_command(form) -> list[str]:
         cmd.extend(["--provider", provider])
 
     comparison = form.get("comparison", "week").strip()
-    if module in {"gsc-api", "keyword-tracker", "cannibalization", "blog-ideas", "ai-insights"} and comparison in ("week", "month", "year"):
+    if module in {"gsc-api", "keyword-tracker", "cannibalization", "blog-ideas"} and comparison in ("week", "month", "year"):
         cmd.extend(["--comparison", comparison])
 
     if module in AI_TOOL_MODULES and form.get("ai"):
@@ -939,6 +1312,9 @@ def build_tool_command(form) -> list[str]:
 def run_tool_from_form(form) -> dict:
     cmd = build_tool_command(form)
     env = os.environ.copy()
+    runtime_cfg = form.get("_runtime_site_config")
+    if runtime_cfg:
+        env["SEO_RUNTIME_SITE_CONFIG"] = str(runtime_cfg)
     for key in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "GIT_HTTP_PROXY", "GIT_HTTPS_PROXY"]:
         env.pop(key, None)
 
@@ -961,13 +1337,21 @@ def run_tool_from_form(form) -> dict:
 
 
 def start_tool_job(form) -> str:
+    module = form.get("module", "blog-ideas")
+    setup_error = _tool_setup_error(module)
+    if setup_error:
+        raise ValueError(setup_error)
     job_id = uuid.uuid4().hex
     form_data = dict(form)
+    if _is_authenticated():
+        form_data["_runtime_site_config"] = _json_mod.dumps(_load_active_site_config(), ensure_ascii=False)
     try:
         command_preview = " ".join(build_tool_command(form_data))
     except Exception:
         command_preview = ""
     _register_job(job_id, {
+        "user_id": _current_user_id(),
+        "site_id": _current_site_id(),
         "status": "running",
         "command": command_preview,
         "returncode": None,
@@ -987,6 +1371,19 @@ def start_tool_job(form) -> str:
 
     threading.Thread(target=worker, daemon=True).start()
     return job_id
+
+
+def _tool_setup_error(module: str) -> str:
+    if not _is_authenticated():
+        return ""
+    cfg = _load_active_site_config()
+    if module in SITE_REQUIRED_TOOL_MODULES and not cfg.get("site_url"):
+        return "Cadastre um site em Configurações antes de executar esta ferramenta."
+    if module in GSC_REQUIRED_TOOL_MODULES:
+        token_file = Path(str(cfg.get("gsc_token_file") or ""))
+        if not cfg.get("gsc_property") or not token_file.exists():
+            return "Conecte o Google Search Console deste site antes de executar esta ferramenta."
+    return ""
 
 
 def format_job_output(job: dict) -> str:
@@ -1112,20 +1509,146 @@ def _kanban_sort_key(row: dict):
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
+def _auth_shell(title: str, body: str) -> str:
+    return f"""<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{esc(title)} — SEO Control Center</title>
+  {styles()}
+</head>
+<body>
+  <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:var(--bg)">
+    <div class="panel" style="width:100%;max-width:420px;padding:28px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:22px">
+        <div class="logo-icon">SE</div>
+        <div>
+          <div class="logo-text" style="color:var(--ink)">SEO Control</div>
+          <div style="color:var(--muted);font-size:12px">Acesse seu workspace</div>
+        </div>
+      </div>
+      {body}
+    </div>
+  </div>
+</body>
+</html>"""
+
+
+def _auth_form(title: str, mode: str, error: str = "") -> str:
+    is_signup = mode == "signup"
+    action = "/signup" if is_signup else "/login"
+    button = "Criar conta" if is_signup else "Entrar"
+    alt_url = "/login" if is_signup else "/signup"
+    alt_label = "Já tenho conta" if is_signup else "Criar conta"
+    err_html = (
+        f'<div style="background:var(--bad-bg);border:1px solid var(--bad);color:var(--bad);'
+        f'padding:10px 12px;border-radius:8px;font-size:13px;margin-bottom:14px">{esc(error)}</div>'
+        if error else ""
+    )
+    body = f"""
+<h1 style="font-size:24px;margin-bottom:6px">{esc(title)}</h1>
+<p class="muted" style="margin-bottom:20px">Cada usuário vê apenas seus sites e tarefas.</p>
+{err_html}
+<form method="post" action="{action}">
+  <input type="hidden" name="next" value="{esc(request.args.get('next', '/'))}">
+  <label style="display:block;font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px;text-transform:uppercase">E-mail</label>
+  <input name="email" type="email" required autocomplete="email"
+         style="width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin-bottom:14px">
+  <label style="display:block;font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px;text-transform:uppercase">Senha</label>
+  <input name="password" type="password" required autocomplete="{'new-password' if is_signup else 'current-password'}" minlength="6"
+         style="width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin-bottom:18px">
+  <button class="btn btn-primary" type="submit" style="width:100%;justify-content:center">{button}</button>
+</form>
+<div style="text-align:center;margin-top:18px;font-size:13px">
+  <a href="{alt_url}" style="color:var(--brand);font-weight:700;text-decoration:none">{alt_label}</a>
+</div>"""
+    return _auth_shell(title, body)
+
+
+def _store_auth_session(auth_response) -> bool:
+    user = getattr(auth_response, "user", None)
+    auth_session = getattr(auth_response, "session", None)
+    if not user or not auth_session:
+        return False
+    session["user_id"] = str(getattr(user, "id", "") or "")
+    session["user_email"] = str(getattr(user, "email", "") or "")
+    session["access_token"] = str(getattr(auth_session, "access_token", "") or "")
+    session["refresh_token"] = str(getattr(auth_session, "refresh_token", "") or "")
+    session["auth_project_url"] = os.environ.get("SUPABASE_URL", "")
+    return bool(session.get("user_id"))
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        email = request.form.get("email", "").strip()
+        password = request.form.get("password", "")
+        try:
+            res = get_supabase_public().auth.sign_in_with_password({"email": email, "password": password})
+            if not _store_auth_session(res):
+                raise RuntimeError("Login não retornou usuário válido.")
+            return redirect(request.form.get("next") or "/")
+        except Exception as exc:
+            return _auth_form("Entrar", "login", str(exc))
+    if _is_authenticated():
+        return redirect("/")
+    notice = session.pop("auth_notice", "")
+    if _has_auth_session() and not _is_authenticated():
+        session.clear()
+        notice = notice or "Sessão antiga ou de outro banco detectada. Faça login novamente."
+    return _auth_form("Entrar", "login", notice)
+
+
+@app.route("/signup", methods=["GET", "POST"])
+def signup():
+    if request.method == "POST":
+        email = request.form.get("email", "").strip()
+        password = request.form.get("password", "")
+        try:
+            res = get_supabase_public().auth.sign_up({"email": email, "password": password})
+            if _store_auth_session(res):
+                return redirect("/settings")
+            return _auth_form("Criar conta", "signup", "Conta criada. Confirme seu e-mail e faça login.")
+        except Exception as exc:
+            return _auth_form("Criar conta", "signup", str(exc))
+    if _is_authenticated():
+        return redirect("/")
+    if _has_auth_session() and not _is_authenticated():
+        session.clear()
+    return _auth_form("Criar conta", "signup")
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
+def _clear_dashboard_cache_for_active_site(periods: tuple[int, ...] = (7, 28, 90)) -> None:
+    try:
+        from modules.gsc_api import _dashboard_cache_file
+        for period in periods:
+            for kind in ("gsc", "ai"):
+                cache_file = _dashboard_cache_file(kind, period)
+                if cache_file.exists():
+                    cache_file.unlink()
+    except Exception:
+        pass
+
+
 @app.route("/dashboard/data")
 def dashboard_data():
     from flask import jsonify
+    ready, message, _cfg = _dashboard_setup_status()
+    if not ready:
+        return jsonify({"error": message, "setup_required": True}), 400
     try:
         period = max(7, min(90, int(request.args.get("period", 28))))
     except (ValueError, TypeError):
         period = 28
     if request.args.get("force") == "1":
-        try:
-            from config import BASE_DIR as _bd
-            for _f in _bd.glob(".dashboard_cache_*.json"):
-                _f.unlink()
-        except Exception:
-            pass
+        _clear_dashboard_cache_for_active_site((period,))
     try:
         from modules.gsc_api import get_dashboard_data
         return jsonify(get_dashboard_data(period_days=period))
@@ -1136,17 +1659,15 @@ def dashboard_data():
 @app.route("/dashboard/ai")
 def dashboard_ai():
     from flask import jsonify
+    ready, message, _cfg = _dashboard_setup_status()
+    if not ready:
+        return jsonify({"ai_summary": "", "ai_error": message, "setup_required": True}), 400
     try:
         period = max(7, min(90, int(request.args.get("period", 28))))
     except (ValueError, TypeError):
         period = 28
     if request.args.get("force") == "1":
-        try:
-            from config import BASE_DIR as _bd
-            for _f in _bd.glob(".dashboard_ai_*.json"):
-                _f.unlink()
-        except Exception:
-            pass
+        _clear_dashboard_cache_for_active_site((period,))
     try:
         from modules.gsc_api import get_dashboard_ai
         return jsonify(get_dashboard_ai(period_days=period))
@@ -1154,18 +1675,66 @@ def dashboard_ai():
         return jsonify({"ai_summary": "", "ai_error": str(exc)})
 
 
+def _dashboard_onboarding(message: str, cfg: dict | None = None):
+    cfg = cfg or {}
+    has_site = bool(cfg.get("site_url"))
+    steps = [
+        ("1", "Cadastre o site", "Informe URL, nome do cliente, páginas prioritárias e contexto do negócio.", has_site),
+        ("2", "Conecte o Google Search Console", "Autorize a conta Google do cliente com acesso ao Search Console.", bool(cfg.get("gsc_token_file") and Path(str(cfg.get("gsc_token_file"))).exists())),
+        ("3", "Carregue o dashboard", "Depois disso, os dados exibidos serão apenas do site ativo deste usuário.", False),
+    ]
+    cards = ""
+    for num, title, desc, done in steps:
+        badge = "Concluído" if done else "Pendente"
+        color = "var(--ok)" if done else "var(--warn)"
+        bg = "var(--ok-bg)" if done else "var(--warn-bg)"
+        cards += f"""
+<div style="border:1px solid var(--line);border-radius:12px;padding:16px;background:var(--surface)">
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:8px">
+    <strong style="font-size:14px;color:var(--ink)">{esc(num)}. {esc(title)}</strong>
+    <span style="font-size:11px;font-weight:700;color:{color};background:{bg};padding:3px 9px;border-radius:999px">{esc(badge)}</span>
+  </div>
+  <p class="muted" style="font-size:13px;line-height:1.55">{esc(desc)}</p>
+</div>"""
+    body = f"""
+<div class="section-head" style="margin-bottom:22px">
+  <div>
+    <h1>Primeira configuração</h1>
+    <p class="muted" style="margin-top:4px">Nenhum dado de GSC será carregado até este usuário conectar o próprio site.</p>
+  </div>
+  <a href="/settings" class="btn btn-primary">Abrir Configurações</a>
+</div>
+<div class="panel" style="max-width:760px;padding:24px">
+  <div style="background:var(--info-bg);border:1px solid var(--info);border-radius:10px;padding:14px 16px;margin-bottom:18px;color:var(--ink)">
+    <strong style="display:block;margin-bottom:4px">Dashboard bloqueado por segurança</strong>
+    <span style="font-size:13px;color:var(--ink-mid)">{esc(message)}</span>
+  </div>
+  <div style="display:grid;gap:12px;margin-bottom:20px">{cards}</div>
+  <a href="/settings" class="btn btn-primary">Cadastrar site e conectar GSC</a>
+</div>"""
+    return page_shell("Primeira configuração", body)
+
+
 @app.route("/")
 def index():
+    ready, setup_message, setup_cfg = _dashboard_setup_status()
+    if not ready:
+        return _dashboard_onboarding(setup_message, setup_cfg)
+
     latest_runs = []
     try:
         sb = get_supabase()
-        latest_runs = (
+        query = (
             sb.table("crawl_runs")
             .select("id, run_type, created_at, summary")
-            .order("created_at", desc=True)
-            .limit(5)
-            .execute().data
         )
+        site_id = _current_site_id()
+        if _is_authenticated() and not site_id:
+            latest_runs = []
+        else:
+            if site_id:
+                query = query.eq("site_id", site_id)
+            latest_runs = query.order("created_at", desc=True).limit(5).execute().data
     except Exception:
         pass
 
@@ -1622,13 +2191,18 @@ def index():
 @app.route("/kanban")
 def kanban():
     try:
-        rows = (
-            get_supabase().table("recommendations")
-            .select("id, priority, source, action, target, reason, owner, status, evidence, created_at, completed_at")
-            .order("priority", desc=True)
-            .limit(300)
-            .execute().data
-        )
+        site_id = _current_site_id()
+        if not site_id:
+            rows = []
+        else:
+            rows = (
+                get_supabase().table("recommendations")
+                .select("id, priority, source, action, target, reason, owner, status, evidence, created_at, completed_at")
+                .eq("site_id", site_id)
+                .order("priority", desc=True)
+                .limit(300)
+                .execute().data
+            )
     except Exception as exc:
         return error_page(str(exc)), 503
 
@@ -1884,11 +2458,15 @@ def update_kanban_card(rec_id):
     now = datetime.now(timezone.utc).isoformat()
     try:
         sb = get_supabase()
+        site_id = _current_site_id()
+        if not site_id:
+            return jsonify({"ok": False, "error": "Nenhum site ativo."}), 400
         rows = []
         if order:
             rows = (
                 sb.table("recommendations")
                 .select("id, status, evidence, completed_at")
+                .eq("site_id", site_id)
                 .in_("id", order[:300])
                 .execute().data
             )
@@ -1896,6 +2474,7 @@ def update_kanban_card(rec_id):
             found = (
                 sb.table("recommendations")
                 .select("id, status, evidence, completed_at")
+                .eq("site_id", site_id)
                 .eq("id", rec_id)
                 .single()
                 .execute().data
@@ -1929,7 +2508,7 @@ def update_kanban_card(rec_id):
                 elif status != "done":
                     payload["completed_at"] = None
 
-            sb.table("recommendations").update(payload).eq("id", card_id).execute()
+            sb.table("recommendations").update(payload).eq("site_id", site_id).eq("id", card_id).execute()
             changed += 1
 
         return jsonify({"ok": True, "status": status, "updated": changed})
@@ -1940,7 +2519,13 @@ def update_kanban_card(rec_id):
 @app.post("/kanban/delete/<rec_id>")
 def delete_kanban_card(rec_id):
     try:
-        get_supabase().table("recommendations").delete().eq("id", rec_id).execute()
+        site_id = _current_site_id()
+        if _is_authenticated() and not site_id:
+            return jsonify({"ok": False, "error": "Nenhum site ativo."}), 400
+        query = get_supabase().table("recommendations").delete().eq("id", rec_id)
+        if site_id:
+            query = query.eq("site_id", site_id)
+        query.execute()
         return jsonify({"ok": True})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 503
@@ -1955,16 +2540,23 @@ def blog_ideas():
         page   = max(1, int(request.args.get("page", 1) or 1))
         offset = (page - 1) * PAGE_SIZE
 
-        res  = (
+        site_id = _current_site_id()
+        if _is_authenticated() and not site_id:
+            rows = []
+            total = 0
+            raise StopIteration
+        query = (
             sb.table("content_changes")
             .select("id, status, url, provider, meta_title, meta_description, raw, created_at", count="exact")
             .ilike("provider", "query_suggester%")
-            .order("created_at", desc=True)
-            .range(offset, offset + PAGE_SIZE - 1)
-            .execute()
         )
+        if site_id:
+            query = query.eq("site_id", site_id)
+        res = query.order("created_at", desc=True).range(offset, offset + PAGE_SIZE - 1).execute()
         rows  = res.data
         total = res.count or 0
+    except StopIteration:
+        pass
     except Exception as exc:
         return error_page(str(exc)), 503
 
@@ -2207,7 +2799,13 @@ function copyHtml() {
 def blog_idea_generate(idea_id):
     try:
         sb  = get_supabase()
-        res = sb.table("content_changes").select("*").eq("id", idea_id).single().execute()
+        site_id = _current_site_id()
+        if _is_authenticated() and not site_id:
+            return jsonify({"html": None, "error": "Cadastre um site antes de acessar ideias de blog."}), 400
+        query = sb.table("content_changes").select("*").eq("id", idea_id)
+        if site_id:
+            query = query.eq("site_id", site_id)
+        res = query.single().execute()
         row = res.data
     except Exception as exc:
         return jsonify({"html": None, "error": f"Ideia não encontrada: {exc}"}), 404
@@ -2220,7 +2818,11 @@ def blog_idea_generate(idea_id):
 
     if not result.get("error"):
         try:
-            sb.table("content_changes").update({"status": "approved"}).eq("id", idea_id).execute()
+            query = sb.table("content_changes").update({"status": "approved"}).eq("id", idea_id)
+            site_id = _current_site_id()
+            if site_id:
+                query = query.eq("site_id", site_id)
+            query.execute()
         except Exception:
             pass
 
@@ -2310,14 +2912,6 @@ TOOL_GROUPS = [
         "label": "Inteligência IA",
         "color": "#8f1d2c",
         "tools": [
-            {
-                "key": "ai-insights",
-                "name": "AI Insights — Gemini",
-                "desc": "Busca dados ao vivo do GSC API no período escolhido e envia para o Gemini gerar resumo executivo, alertas críticos, saúde das marcas, tarefas ICE e rewrites de snippet.",
-                "icon": "✨",
-                "tags": ["comparison"],
-                "badge": "Gemini",
-            },
             {
                 "key": "blog-ideas",
                 "name": "Ideias de Blog",
@@ -2577,8 +3171,16 @@ def url_detail():
     try:
         target  = request.args.get("target", "")
         sb      = get_supabase()
-        issues  = sb.table("issues").select("severity, source, issue_type, title, status").ilike("target", f"%{target}%").limit(50).execute().data
-        recs    = sb.table("recommendations").select("priority, source, action, reason, status").ilike("target", f"%{target}%").limit(50).execute().data
+        site_id = _current_site_id()
+        if _is_authenticated() and not site_id:
+            return error_page("Cadastre um site antes de consultar detalhes de URL."), 400
+        issue_q = sb.table("issues").select("severity, source, issue_type, title, status").ilike("target", f"%{target}%")
+        rec_q   = sb.table("recommendations").select("priority, source, action, reason, status").ilike("target", f"%{target}%")
+        if site_id:
+            issue_q = issue_q.eq("site_id", site_id)
+            rec_q = rec_q.eq("site_id", site_id)
+        issues  = issue_q.limit(50).execute().data
+        recs    = rec_q.limit(50).execute().data
     except Exception as exc:
         return error_page(str(exc)), 503
 
@@ -2631,6 +3233,38 @@ def url_detail():
 
 @app.route("/reports")
 def reports_list():
+    if _is_authenticated():
+        last = _load_last_audit()
+        if last:
+            completed = esc(last.get("_completed_at") or "Última auditoria")
+            scope = esc((last.get("_audit_scope") or {}).get("source") or "Auditoria completa")
+            rows_html = f"""
+<tr>
+  <td style="white-space:nowrap;font-size:13px">{completed}</td>
+  <td style="font-size:13px">{scope}</td>
+  <td><span class="tag">Auditoria Completa</span></td>
+  <td style="text-align:right;color:var(--muted);font-size:12px">privado</td>
+  <td style="text-align:center">
+    <a href="/full-audit/report/last" style="font-size:13px;font-weight:600;color:var(--primary);text-decoration:none">Ver</a>
+  </td>
+</tr>"""
+        else:
+            rows_html = '<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:32px">Nenhum relatório deste usuário/site ainda. Rode uma auditoria em <a href="/full-audit?new=1">Auditoria Completa</a>.</td></tr>'
+        body = f"""
+<div class="section-head" style="margin-bottom:20px">
+  <h1>Relatórios</h1>
+  <a href="/full-audit?new=1" style="font-size:13px;color:var(--primary);text-decoration:none;font-weight:600">+ Nova auditoria</a>
+</div>
+<div class="panel">
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Data/hora</th><th>Escopo</th><th>Módulos</th><th style="text-align:right">Tipo</th><th></th></tr></thead>
+      <tbody>{rows_html}</tbody>
+    </table>
+  </div>
+</div>"""
+        return page_shell("Relatórios", body)
+
     import json as _json
     from pathlib import Path
     from config import REPORTS_FOLDER
@@ -2697,6 +3331,11 @@ def reports_list():
 
 @app.route("/report")
 def report_view():
+    if _is_authenticated():
+        if _load_last_audit():
+            return redirect("/full-audit/report/last")
+        return redirect("/full-audit?new=1")
+
     import json as _json
     from pathlib import Path
     from config import REPORTS_FOLDER
@@ -3263,185 +3902,9 @@ def report_view():
 
 @app.route("/ai-insights")
 def ai_insights():
-    try:
-        from modules import gemini_insights
-        data = gemini_insights.load_latest()
-    except Exception as exc:
-        return error_page(str(exc)), 503
-
-    if not data:
-        body = """
-<div class="section-head"><h1>AI Insights</h1></div>
-<div class="no-insights">
-  <h3>Nenhum insight gerado ainda</h3>
-  <p>Use as <a href="/tools">Ferramentas</a> e selecione o módulo <strong>AI Insights (Gemini)</strong> para gerar insights.</p>
-</div>"""
-        return page_shell("AI Insights", body)
-
-    generated_at = data.get("_ai_generated_at", "")[:16].replace("T", " ")
-    provider     = data.get("_ai_provider", "gemini")
-
-    # ── Executive summary ──────────────────────────────────────────────────────
-    summary_html = ""
-    if data.get("executive_summary"):
-        summary_html = f"""
-<div class="summary-box">
-  <h3>Resumo Executivo</h3>
-  <p>{esc(data['executive_summary'])}</p>
-</div>"""
-
-    # ── Critical alerts ────────────────────────────────────────────────────────
-    alerts_html = ""
-    alerts = data.get("critical_alerts") or []
-    if alerts:
-        items = ""
-        for alert in alerts:
-            urgency = str(alert.get("urgency") or "baixa").lower()
-            items += f"""
-<div class="alert-item urgency-{esc(urgency)}">
-  <div class="alert-dot"></div>
-  <div>
-    <div class="alert-title">{esc(alert.get('title',''))}</div>
-    <div class="alert-desc">{esc(alert.get('description',''))}</div>
-  </div>
-</div>"""
-        alerts_html = f"""
-<div class="panel" style="margin-bottom:24px">
-  <div class="panel-head"><h2 class="panel-title">Alertas Críticos</h2></div>
-  {items}
-</div>"""
-
-    # ── Brand health ───────────────────────────────────────────────────────────
-    brand_html = ""
-    brand_health = data.get("brand_health") or {}
-    if brand_health:
-        cards = ""
-        for brand, info in brand_health.items():
-            score     = int(info.get("score") or 0)
-            tier_val  = str(info.get("tier") or "")
-            tier_cls  = "badge-high" if tier_val == "top" else "badge-medium"
-            main_iss  = esc(info.get("main_issue") or "")
-            priority  = esc(info.get("priority_action") or "")
-            brand_label = brand.replace("_", " ").title()
-            cards += f"""
-<div class="brand-score-item">
-  <div class="brand-score-header">
-    <span class="brand-score-name">{esc(brand_label)} <span class="badge {tier_cls}" style="font-size:10px;margin-left:4px">{esc(tier_val)}</span></span>
-    <span class="brand-score-num">{score}</span>
-  </div>
-  <div class="brand-score-bar"><div class="brand-score-fill" style="width:{score}%"></div></div>
-  <div class="brand-score-meta">{main_iss}</div>
-  <div style="font-size:12px;color:var(--ink-mid);margin-top:4px">{priority}</div>
-</div>"""
-        brand_html = f"""
-<div class="panel" style="margin-bottom:24px">
-  <div class="panel-head"><h2 class="panel-title">Saúde das Marcas</h2></div>
-  <div class="insights-grid" style="margin-bottom:0">{cards}</div>
-</div>"""
-
-    # ── AI tasks table ─────────────────────────────────────────────────────────
-    tasks_html = ""
-    tasks = data.get("tasks") or []
-    if tasks:
-        def ice_badge(val, thresholds):
-            hi, mid = thresholds
-            if val >= hi:   return "badge-ok"
-            if val >= mid:  return "badge-medium"
-            return "badge-high"
-
-        task_rows = ""
-        for t in tasks:
-            impact     = int(t.get("impact")     or 0)
-            confidence = int(t.get("confidence") or 0)
-            effort     = int(t.get("effort")     or 1)
-            priority   = round((impact * confidence / 100) / max(effort, 1), 1)
-            tier_val   = str(t.get("brand_tier") or "")
-            tier_cls   = "badge-high" if tier_val == "top" else ("badge-medium" if tier_val == "good" else "badge-info")
-            owner      = str(t.get("owner") or "SEO")
-            task_rows += (
-                f"<tr>"
-                f"<td><strong>{priority}</strong></td>"
-                f"<td style='max-width:300px'><strong>{esc(t.get('action',''))}</strong>"
-                f"<br><small style='color:var(--muted)'>{esc(str(t.get('target',''))[:80])}</small></td>"
-                f"<td style='max-width:280px;font-size:12px;color:var(--ink-mid)'>{esc(str(t.get('reason',''))[:120])}</td>"
-                f"<td><span class='badge {ice_badge(impact,[70,40])}'>{impact}</span></td>"
-                f"<td><span class='badge badge-gray'>{confidence}</span></td>"
-                f"<td><span class='badge badge-gray'>{effort}</span></td>"
-                f"<td><span class='badge badge-brand'>{esc(owner)}</span></td>"
-                f"<td><span class='badge {tier_cls}'>{esc(tier_val) or 'all'}</span></td>"
-                f"</tr>"
-            )
-        tasks_html = f"""
-<div class="panel" style="margin-bottom:24px">
-  <div class="panel-head">
-    <h2 class="panel-title">Tarefas Geradas pela IA ({len(tasks)})</h2>
-  </div>
-  <div class="table-wrap">
-    <table>
-      <thead><tr>
-        <th>Prior.</th><th>Ação</th><th>Motivo</th>
-        <th>Impact</th><th>Conf.</th><th>Effort</th><th>Owner</th><th>Tier</th>
-      </tr></thead>
-      <tbody>{task_rows}</tbody>
-    </table>
-  </div>
-</div>"""
-
-    # ── Snippet rewrites ───────────────────────────────────────────────────────
-    snippets_html = ""
-    snippets = data.get("snippet_rewrites") or []
-    if snippets:
-        cards = ""
-        for s in snippets:
-            cards += f"""
-<div class="snippet-card">
-  <div class="snippet-url">{esc(s.get('url',''))}</div>
-  <div class="snippet-problem">Problema: {esc(s.get('current_problem',''))}</div>
-  <div class="snippet-label">Title sugerido</div>
-  <div class="snippet-value">{esc(s.get('suggested_title',''))}</div>
-  <div class="snippet-label">Meta description sugerida</div>
-  <div class="snippet-value">{esc(s.get('suggested_description',''))}</div>
-</div>"""
-        snippets_html = f"""
-<div class="panel" style="margin-bottom:24px">
-  <div class="panel-head"><h2 class="panel-title">Reescritas de Snippet ({len(snippets)})</h2></div>
-  {cards}
-</div>"""
-
-    # ── Content gaps ───────────────────────────────────────────────────────────
-    gaps_html = ""
-    gaps = data.get("content_gaps") or []
-    if gaps:
-        items = ""
-        for g in gaps:
-            impr = int(g.get("impressions") or 0)
-            items += f"""
-<div class="gap-item">
-  <span class="gap-type">{esc(g.get('type',''))}</span>
-  <div class="gap-title">{esc(g.get('title',''))}</div>
-  <div class="gap-query">Query-alvo: {esc(g.get('target_query',''))} &middot; {impr:,} impressões</div>
-  <div class="gap-reason">{esc(g.get('rationale',''))}</div>
-</div>"""
-        gaps_html = f"""
-<div class="panel" style="margin-bottom:24px">
-  <div class="panel-head"><h2 class="panel-title">Lacunas de Conteúdo ({len(gaps)})</h2></div>
-  {items}
-</div>"""
-
-    body = f"""
-<div class="section-head">
-  <h1>AI Insights <span class="ai-badge">&#10024; {esc(provider.upper())}</span></h1>
-  <span style="font-size:12px;color:var(--muted)">Gerado em {esc(generated_at)}</span>
-</div>
-{summary_html}
-{alerts_html}
-{brand_html}
-{tasks_html}
-{snippets_html}
-{gaps_html}"""
-
-    return page_shell("AI Insights", body)
-
+    if _load_last_audit():
+        return redirect("/full-audit/report/last")
+    return redirect("/full-audit?new=1")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Full Audit — Master SEO audit with real-time progress via SSE
@@ -3452,27 +3915,52 @@ _AUDIT_LOCK = threading.Lock()
 
 try:
     from config import BASE_DIR as _AUDIT_BASE_DIR
-    _LAST_AUDIT_FILE = _AUDIT_BASE_DIR / ".last_full_audit.json"
+    _LAST_AUDIT_DIR = _AUDIT_BASE_DIR / ".runtime" / "audits"
+    _LEGACY_LAST_AUDIT_FILE = _AUDIT_BASE_DIR / ".last_full_audit.json"
 except Exception:
     import pathlib as _pl
-    _LAST_AUDIT_FILE = _pl.Path(".last_full_audit.json")
+    _LAST_AUDIT_DIR = _pl.Path(".runtime") / "audits"
+    _LEGACY_LAST_AUDIT_FILE = _pl.Path(".last_full_audit.json")
 
 
-def _save_last_audit(results: dict) -> None:
+def _audit_context_key(site_config: dict | None = None, user_id: str | None = None) -> str:
+    cfg = site_config if site_config is not None else (_load_active_site_config() if _is_authenticated() else {})
+    uid = user_id if user_id is not None else _current_user_id()
+    site_id = str((cfg or {}).get("site_id") or _current_site_id() or "")
+    site_url = str((cfg or {}).get("site_url") or get_site_url() or "")
+    return _storage_key(uid or "local", site_id or site_url or "default")
+
+
+def _last_audit_file(context_key: str | None = None) -> Path:
+    key = context_key or _audit_context_key()
+    return _LAST_AUDIT_DIR / f"last_full_audit_{key}.json"
+
+
+def _has_last_audit() -> bool:
+    if _last_audit_file().exists():
+        return True
+    return (not _is_authenticated()) and _LEGACY_LAST_AUDIT_FILE.exists()
+
+
+def _save_last_audit(results: dict, context_key: str | None = None) -> None:
     try:
         import json as _jj
-        _LAST_AUDIT_FILE.write_text(
+        _LAST_AUDIT_DIR.mkdir(parents=True, exist_ok=True)
+        _last_audit_file(context_key).write_text(
             _jj.dumps(results, ensure_ascii=False, default=str), encoding="utf-8"
         )
     except Exception:
         pass
 
 
-def _load_last_audit() -> dict | None:
+def _load_last_audit(context_key: str | None = None) -> dict | None:
     try:
-        if _LAST_AUDIT_FILE.exists():
-            import json as _jj
-            return _jj.loads(_LAST_AUDIT_FILE.read_text(encoding="utf-8"))
+        import json as _jj
+        path = _last_audit_file(context_key)
+        if path.exists():
+            return _jj.loads(path.read_text(encoding="utf-8"))
+        if (not _is_authenticated()) and _LEGACY_LAST_AUDIT_FILE.exists():
+            return _jj.loads(_LEGACY_LAST_AUDIT_FILE.read_text(encoding="utf-8"))
     except Exception:
         pass
     return None
@@ -3520,10 +4008,18 @@ _AUDIT_CSS = """<style>
 </style>"""
 
 
-def _audit_register(job_id: str) -> _queue_mod.Queue:
+def _audit_register(job_id: str, user_id: str = "", site_id: str = "",
+                    context_key: str = "") -> _queue_mod.Queue:
     q: _queue_mod.Queue = _queue_mod.Queue()
     with _AUDIT_LOCK:
-        _AUDIT_JOBS[job_id] = {"q": q, "status": "running", "result": None}
+        _AUDIT_JOBS[job_id] = {
+            "q": q,
+            "status": "running",
+            "result": None,
+            "user_id": user_id,
+            "site_id": site_id,
+            "context_key": context_key,
+        }
         if len(_AUDIT_JOBS) > 20:
             oldest = next(iter(_AUDIT_JOBS))
             del _AUDIT_JOBS[oldest]
@@ -3532,7 +4028,12 @@ def _audit_register(job_id: str) -> _queue_mod.Queue:
 
 def _audit_get(job_id: str) -> dict | None:
     with _AUDIT_LOCK:
-        return _AUDIT_JOBS.get(job_id)
+        job = _AUDIT_JOBS.get(job_id)
+    if not job:
+        return None
+    if _auth_required() and job.get("user_id") != _current_user_id():
+        return None
+    return job
 
 
 _AUDIT_SCOPE_OPTIONS = OrderedDict([
@@ -3607,6 +4108,7 @@ def _select_full_audit_pages(scope_key: str) -> tuple[list[str], dict]:
         return configured_pages, {
             "key": key,
             "label": f"Rápida - {len(configured_pages)} URLs configuradas",
+            "selected_urls": configured_pages,
             "requested_pages": len(configured_pages),
             "duration": option["duration"],
             "source": configured_label,
@@ -3635,6 +4137,7 @@ def _select_full_audit_pages(scope_key: str) -> tuple[list[str], dict]:
     return selected[:limit], {
         "key": key,
         "label": option["label"],
+        "selected_urls": selected[:limit],
         "requested_pages": limit,
         "duration": option["duration"],
         "source": source,
@@ -3674,7 +4177,12 @@ def _health_score(results: dict) -> int:
     return round(sum(page_score(page) for page in pages) / len(pages))
 
 
-def _run_full_audit(job_id: str, q: _queue_mod.Queue, scope_key: str = "priority") -> None:
+def _run_full_audit(job_id: str, q: _queue_mod.Queue, scope_key: str = "priority",
+                    site_config: dict | None = None,
+                    audit_context_key: str | None = None) -> None:
+    if site_config is not None:
+        set_runtime_site_config(site_config)
+
     def emit(step, label, status, summary="", data=None):
         q.put({"step": step, "label": label, "status": status,
                "summary": summary, "data": data or {}})
@@ -3790,7 +4298,17 @@ def _run_full_audit(job_id: str, q: _queue_mod.Queue, scope_key: str = "priority
     health = _health_score(results)
     results["_health"] = health
     results["_completed_at"] = _dt_audit.datetime.now().strftime("%d/%m/%Y %H:%M")
-    _save_last_audit(results)
+    try:
+        from modules import supabase_store as _ss
+        scope_info = results.get("_audit_scope") or {}
+        scope_urls = scope_info.get("selected_urls") or scope_info.get("urls") or []
+        run_id = _ss.save_audit_results(results, run_type="full-audit", scope=scope_urls)
+        results["_supabase_run_id"] = run_id
+        emit("persist", "Kanban & banco de dados", "ok", "Achados salvos no Kanban")
+    except Exception as exc:
+        results["_persist_error"] = str(exc)
+        emit("persist", "Kanban & banco de dados", "warn", f"Relatório gerado, mas Kanban não foi atualizado: {str(exc)[:120]}")
+    _save_last_audit(results, audit_context_key)
     q.put({"done": True, "health": health})
     with _AUDIT_LOCK:
         if job_id in _AUDIT_JOBS:
@@ -3799,11 +4317,16 @@ def _run_full_audit(job_id: str, q: _queue_mod.Queue, scope_key: str = "priority
 
 @app.route("/full-audit")
 def full_audit():
-    if request.args.get("new") != "1" and _LAST_AUDIT_FILE.exists():
+    if request.args.get("new") != "1" and _has_last_audit():
         return redirect("/full-audit/report/last")
     from config import get_priority_pages
 
-    if not get_site_url():
+    page_site_config = _load_active_site_config() if _is_authenticated() else None
+    if _is_authenticated() and page_site_config:
+        set_runtime_site_config(page_site_config)
+    site_url_for_page = (page_site_config or {}).get("site_url") if _is_authenticated() else get_site_url()
+
+    if not site_url_for_page:
         body = """
 <div class="section-head">
   <h1>Auditoria Completa</h1>
@@ -3878,7 +4401,7 @@ def full_audit():
 
 <script>
 var _jobId = null;
-var _stepOrder = ['gsc','drops','onpage','content','backlog','ai'];
+var _stepOrder = ['gsc','drops','onpage','content','backlog','ai','persist'];
 var _stepDone  = 0;
 var _stepData  = {};
 var _auditDurations = __AUDIT_DURATIONS__;
@@ -3958,13 +4481,22 @@ function handleStep(ev) {
 
 @app.route("/full-audit/start", methods=["POST"])
 def full_audit_start():
-    if not get_site_url():
+    site_config = _load_active_site_config() if _is_authenticated() else None
+    if _is_authenticated():
+        if not (site_config or {}).get("site_url"):
+            return jsonify({"error": "Cadastre um site antes de iniciar a auditoria."}), 400
+    elif not get_site_url():
         return jsonify({"error": "Configure a URL do site antes de iniciar a auditoria."}), 400
     payload = request.get_json(silent=True) or {}
     scope_key, _scope_info = _audit_scope_config(payload.get("page_scope"))
     job_id = uuid.uuid4().hex
-    q = _audit_register(job_id)
-    threading.Thread(target=_run_full_audit, args=(job_id, q, scope_key), daemon=True).start()
+    context_key = _audit_context_key(site_config=site_config, user_id=_current_user_id())
+    q = _audit_register(job_id, _current_user_id(), _current_site_id(), context_key)
+    threading.Thread(
+        target=_run_full_audit,
+        args=(job_id, q, scope_key, site_config, context_key),
+        daemon=True,
+    ).start()
     return jsonify({"job_id": job_id, "page_scope": scope_key})
 
 
@@ -4652,6 +5184,32 @@ document.querySelectorAll('.data-table').forEach(makeSortable);
 
 # ── Settings ─────────────────────────────────────────────────────────────────
 
+@app.post("/settings/site/select")
+def select_site():
+    site_id = str(request.form.get("site_id", "")).strip()
+    if not _is_authenticated() or not site_id:
+        return redirect(url_for("settings"))
+    try:
+        rows = (
+            get_supabase().table("user_site_settings")
+            .select("site_id")
+            .eq("user_id", _current_user_id())
+            .eq("site_id", site_id)
+            .limit(1)
+            .execute().data
+            or []
+        )
+        if rows:
+            session["active_site_id"] = site_id
+            set_runtime_site_config(_load_active_site_config())
+            session["gsc_ok"] = "Site ativo alterado."
+        else:
+            session["gsc_err"] = "Site não encontrado para este usuário."
+    except Exception as exc:
+        session["gsc_err"] = f"Erro ao trocar site: {exc}"
+    return redirect(url_for("settings"))
+
+
 @app.route("/settings", methods=["GET", "POST"])
 def settings():
     from config import _load_site_config
@@ -4666,7 +5224,6 @@ def settings():
             site_url     = request.form.get("site_url", "").strip().rstrip("/")
             site_name    = request.form.get("site_name", "").strip()
             gsc_property = request.form.get("gsc_property", "").strip()
-            cred_file    = request.files.get("gsc_credentials")
             business_context = request.form.get("business_context", "").strip()
             content_guidelines = request.form.get("content_guidelines", "").strip()
             priority_pages = _split_urls(request.form.get("priority_pages", ""))
@@ -4681,33 +5238,39 @@ def settings():
             if gsc_property in ("/", ""):
                 gsc_property = None
 
-            save_site_config(
-                site_url=site_url,
-                site_name=site_name,
-                gsc_property=gsc_property or "",
-                business_context=business_context,
-                content_guidelines=content_guidelines,
-                priority_pages=priority_pages,
-                brand_aliases=brand_aliases,
-                product_terms=product_terms,
-                commercial_terms=commercial_terms,
-            )
+            site_payload = {
+                "_new_site": request.form.get("new_site") == "1",
+                "site_url": site_url,
+                "site_name": site_name,
+                "gsc_property": gsc_property or "",
+                "business_context": business_context,
+                "content_guidelines": content_guidelines,
+                "priority_pages": priority_pages,
+                "brand_aliases": brand_aliases,
+                "product_terms": product_terms,
+                "commercial_terms": commercial_terms,
+            }
+            site_saved = False
+            try:
+                if _is_authenticated():
+                    _save_user_site_config(site_payload)
+                else:
+                    save_site_config(**site_payload)
+                site_saved = True
+            except Exception as exc:
+                msgs.append((f"Erro ao salvar site: {exc}", "bad"))
 
-            if cred_file and cred_file.filename:
-                (BASE_DIR / "gsc_credentials.json").write_bytes(cred_file.read())
-                # Remove stale token so user must re-auth via the Connect button
-                tok = BASE_DIR / ".gsc_token.json"
-                if tok.exists():
-                    tok.unlink()
-                msgs.append(("Credenciais GSC salvas. Clique em 'Conectar com Google' para autenticar.", "ok"))
+            # Clear only the active site dashboard cache. Other users/sites keep their private cache.
+            if _is_authenticated():
+                _clear_dashboard_cache_for_active_site()
+            else:
+                for folder, pat in ((BASE_DIR, ".dashboard_cache_*.json"), (BASE_DIR, ".dashboard_ai_*.json"), (BASE_DIR / ".runtime", "dashboard_*_*.json")):
+                    for f in folder.glob(pat):
+                        try: f.unlink()
+                        except Exception: pass
 
-            # Clear GSC/dashboard caches
-            for pat in (".dashboard_cache_*.json", ".dashboard_ai_*.json"):
-                for f in BASE_DIR.glob(pat):
-                    try: f.unlink()
-                    except Exception: pass
-
-            msgs.append(("Configurações de site salvas.", "ok"))
+            if site_saved:
+                msgs.append(("Configurações de site salvas.", "ok"))
 
         elif action == "apikeys":
             key_map = {
@@ -4717,12 +5280,34 @@ def settings():
                 "mistral_key":     "MISTRAL_API_KEY",
                 "anthropic_key":   "ANTHROPIC_API_KEY",
             }
+            provider_by_env = {
+                "GEMINI_API_KEY": "gemini",
+                "OPENROUTER_API_KEY": "openrouter",
+                "GROQ_API_KEY": "groq",
+                "MISTRAL_API_KEY": "mistral",
+                "ANTHROPIC_API_KEY": "anthropic",
+            }
             saved = []
-            for field, env_key in key_map.items():
-                val = request.form.get(field, "").strip()
-                if val:
-                    _update_env_file(env_key, val)
-                    saved.append(env_key.replace("_API_KEY", "").replace("_KEY", "").title())
+            if _is_authenticated():
+                cfg = _load_active_site_config()
+                if not cfg.get("site_id"):
+                    msgs.append(("Cadastre um site antes de salvar chaves de IA desta conta.", "bad"))
+                else:
+                    site_keys = dict(cfg.get("ai_api_keys") or {})
+                    for field, env_key in key_map.items():
+                        val = request.form.get(field, "").strip()
+                        if val:
+                            provider = provider_by_env[env_key]
+                            site_keys[provider] = val
+                            saved.append(env_key.replace("_API_KEY", "").replace("_KEY", "").title())
+                    if saved:
+                        _update_active_user_site_config(ai_api_keys=site_keys)
+            else:
+                for field, env_key in key_map.items():
+                    val = request.form.get(field, "").strip()
+                    if val:
+                        _update_env_file(env_key, val)
+                        saved.append(env_key.replace("_API_KEY", "").replace("_KEY", "").title())
             if saved:
                 msgs.append((f"Chaves salvas: {', '.join(saved)}.", "ok"))
             else:
@@ -4735,11 +5320,17 @@ def settings():
             msgs.append((val, "ok" if kind == "gsc_ok" else "bad"))
 
     # ── Read current state ────────────────────────────────────────────────────
-    current_url      = get_site_url()
-    current_prop     = get_gsc_property()
-    has_creds        = (BASE_DIR / "gsc_credentials.json").exists()
-    has_token        = (BASE_DIR / ".gsc_token.json").exists()
-    cfg              = _load_site_config()
+    user_sites       = _load_user_sites() if _is_authenticated() else []
+    is_new_site      = request.args.get("new_site") == "1"
+    cfg              = {} if is_new_site else (_load_active_site_config() if _is_authenticated() else _load_site_config())
+    current_url      = cfg.get("site_url") or ("" if _is_authenticated() else get_site_url())
+    current_prop     = cfg.get("gsc_property") or ("" if _is_authenticated() else get_gsc_property())
+    _gsc_cred_file, gsc_token_file = (
+        (BASE_DIR / ".runtime" / "gsc" / "_new_site_credentials.json", BASE_DIR / ".runtime" / "gsc" / "_new_site_token.json")
+        if is_new_site else _active_gsc_files()
+    )
+    oauth_ready      = _google_oauth_ready()
+    has_token        = gsc_token_file.exists()
     available_sites  = cfg.get("available_gsc_sites") or []
     gsc_account      = cfg.get("gsc_account_email", "")
     current_site_name = cfg.get("site_name", "")
@@ -4751,12 +5342,13 @@ def settings():
     current_commercial_terms = ", ".join(cfg.get("commercial_terms") or [])
 
     # Current API key statuses (masked)
+    site_ai_keys = cfg.get("ai_api_keys") if isinstance(cfg.get("ai_api_keys"), dict) else {}
     api_keys = {
-        "GEMINI_API_KEY":     os.environ.get("GEMINI_API_KEY", ""),
-        "OPENROUTER_API_KEY": os.environ.get("OPENROUTER_API_KEY", ""),
-        "GROQ_API_KEY":       os.environ.get("GROQ_API_KEY", ""),
-        "MISTRAL_API_KEY":    os.environ.get("MISTRAL_API_KEY", ""),
-        "ANTHROPIC_API_KEY":  os.environ.get("ANTHROPIC_API_KEY", ""),
+        "GEMINI_API_KEY":     site_ai_keys.get("gemini") or os.environ.get("GEMINI_API_KEY", ""),
+        "OPENROUTER_API_KEY": site_ai_keys.get("openrouter") or os.environ.get("OPENROUTER_API_KEY", ""),
+        "GROQ_API_KEY":       site_ai_keys.get("groq") or os.environ.get("GROQ_API_KEY", ""),
+        "MISTRAL_API_KEY":    site_ai_keys.get("mistral") or os.environ.get("MISTRAL_API_KEY", ""),
+        "ANTHROPIC_API_KEY":  site_ai_keys.get("anthropic") or os.environ.get("ANTHROPIC_API_KEY", ""),
     }
 
     # ── Build HTML pieces ─────────────────────────────────────────────────────
@@ -4769,6 +5361,36 @@ def settings():
                     f'padding:11px 15px;margin-bottom:12px;color:{clr};font-size:13px;font-weight:600">'
                     f'{esc(text)}</div>')
         return out
+
+    site_switcher = ""
+    if _is_authenticated():
+        site_options = "".join(
+            f'<option value="{esc(str(site.get("site_id", "")))}" {"selected" if str(site.get("site_id", "")) == _current_site_id() and not is_new_site else ""}>'
+            f'{esc(site.get("site_name") or site.get("site_url") or "Site sem nome")}</option>'
+            for site in user_sites
+        )
+        selector = (
+            f"""
+<form method="POST" action="/settings/site/select" style="display:flex;gap:10px;align-items:center;flex:1">
+  <select name="site_id" style="flex:1;padding:9px 12px;border:1px solid var(--line);border-radius:7px;background:var(--panel);font-size:13px;color:var(--ink)">
+    {site_options}
+  </select>
+  <button class="btn btn-sm" type="submit">Usar site</button>
+</form>"""
+            if user_sites else
+            '<div style="font-size:13px;color:var(--muted);flex:1">Nenhum site cadastrado ainda.</div>'
+        )
+        site_switcher = f"""
+<div class="panel" style="padding:16px 18px">
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">
+    <div>
+      <h2 style="font-size:16px;margin-bottom:3px">Workspace do usuário</h2>
+      <p class="muted" style="font-size:12px">Troque o site ativo ou cadastre um novo cliente.</p>
+    </div>
+    {selector}
+    <a href="/settings?new_site=1" class="btn btn-primary btn-sm">+ Novo site</a>
+  </div>
+</div>"""
 
     # GSC connection panel
     if has_token:
@@ -4814,11 +5436,11 @@ def settings():
     Para domínios use <code>sc-domain:seusite.com.br</code>.
   </p>
 </div>"""
-    elif has_creds:
+    elif oauth_ready and current_url and not is_new_site:
         gsc_panel = f"""
 <div style="background:var(--warn-bg);border:1px solid var(--warn);border-radius:8px;padding:12px 16px;
             display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
-  <span style="color:var(--warn);font-weight:600;font-size:13px">&#9888; Credenciais carregadas — autenticação pendente</span>
+  <span style="color:var(--warn);font-weight:600;font-size:13px">&#9888; Search Console ainda não conectado</span>
   <a href="/settings/gsc/connect" class="btn btn-sm"
      style="background:#fff;border:1px solid #ddd;display:inline-flex;align-items:center;gap:7px;padding:6px 12px;
             border-radius:6px;font-size:13px;font-weight:600;color:#3c4043;text-decoration:none;white-space:nowrap">
@@ -4828,29 +5450,22 @@ def settings():
 </div>
 <div style="background:var(--line-light);border:1px solid var(--line);border-radius:8px;
             padding:14px 16px;font-size:12px;color:var(--ink-mid);line-height:1.7">
-  <strong>Próximo passo:</strong> Clique em "Conectar com Google" acima para autorizar acesso ao Search Console.<br>
-  Você será redirecionado para login Google e voltará automaticamente.
+  <strong>Conexão simples:</strong> clique em "Conectar com Google" e escolha uma conta que tenha acesso ao Search Console deste site.<br>
+  Você será redirecionado para o Google e voltará automaticamente. Nenhum arquivo do Google Cloud é necessário para o cliente.
+</div>"""
+    elif not current_url or is_new_site:
+        gsc_panel = f"""
+<div style="background:var(--line-light);border:1px solid var(--line);border-radius:8px;
+            padding:14px 16px;font-size:12px;color:var(--ink-mid);line-height:1.7">
+  <strong>Primeiro salve o site.</strong><br>
+  Depois de salvar o cliente/site, o botão "Conectar com Google" aparecerá aqui para autorizar o Search Console.
 </div>"""
     else:
         gsc_panel = f"""
 <div style="background:var(--line-light);border:1px solid var(--line);border-radius:8px;
             padding:16px;margin-bottom:16px;font-size:12px;color:var(--ink-mid);line-height:1.7">
-  <strong>Como conectar o Google Search Console:</strong><br>
-  1. Acesse <a href="https://console.cloud.google.com/" target="_blank" style="color:var(--brand)">console.cloud.google.com</a>
-     → crie um projeto<br>
-  2. Ative a <strong>Google Search Console API</strong> no projeto<br>
-  3. Credenciais → Criar credencial → <strong>OAuth 2.0 → Aplicativo para Desktop</strong><br>
-  4. Baixe o arquivo JSON e faça upload abaixo<br>
-  5. Clique em <strong>Conectar com Google</strong> para autorizar
-</div>
-<div>
-  <label style="display:block;font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px;
-                text-transform:uppercase;letter-spacing:.04em">Upload gsc_credentials.json</label>
-  <input type="file" name="gsc_credentials" accept=".json"
-         style="padding:6px 0;font-size:13px;color:var(--ink-mid)"/>
-  <p style="font-size:11px;color:var(--muted);margin-top:4px">
-    Arquivo OAuth2 baixado do Google Cloud Console.
-  </p>
+  <strong>Integração Google temporariamente indisponível.</strong><br>
+  O login com Google ainda não foi habilitado para este ambiente. Fale com o administrador do sistema.
 </div>"""
 
     # API keys rows
@@ -4888,6 +5503,12 @@ def settings():
   />
 </div>"""
 
+    keys_storage_note = (
+        "Deixe o campo em branco para manter a chave atual. Em contas autenticadas, as chaves ficam salvas apenas no site ativo; o .env do servidor vira fallback."
+        if _is_authenticated()
+        else "Deixe o campo em branco para manter a chave atual. As chaves ficam salvas no arquivo <code>.env</code> e nunca aparecem completas na tela."
+    )
+
     body = f"""
 <div class="section-head" style="margin-bottom:24px">
   <h1>Configurações</h1>
@@ -4895,12 +5516,14 @@ def settings():
 {_msg_html(msgs)}
 
 <div style="max-width:700px;display:flex;flex-direction:column;gap:20px">
+  {site_switcher}
 
   <!-- ── Panel 1: Site + GSC ─────────────────────────────────────── -->
   <div class="panel">
     <h2 style="margin-bottom:18px">Site</h2>
-    <form method="POST" enctype="multipart/form-data">
+    <form method="POST">
       <input type="hidden" name="action" value="site">
+      <input type="hidden" name="new_site" value="{"1" if is_new_site else "0"}">
       <div style="display:flex;flex-direction:column;gap:14px;margin-bottom:22px">
         <div>
           <label style="display:block;font-size:12px;font-weight:700;color:var(--muted);
@@ -4979,7 +5602,7 @@ def settings():
   <div class="panel">
     <h2 style="margin-bottom:4px">Chaves de API — IA</h2>
     <p style="font-size:12px;color:var(--muted);margin-bottom:16px">
-      Deixe o campo em branco para manter a chave atual. As chaves ficam salvas no arquivo <code>.env</code> e nunca aparecem completas na tela.
+      {keys_storage_note}
     </p>
     <form method="POST">
       <input type="hidden" name="action" value="apikeys">
@@ -4998,21 +5621,19 @@ def settings():
 @app.route("/settings/gsc/connect")
 def gsc_connect():
     """Start Google OAuth flow for GSC."""
-    cred_file = BASE_DIR / "gsc_credentials.json"
-    if not cred_file.exists():
-        session["gsc_err"] = "Faça upload do gsc_credentials.json primeiro."
+    if _is_authenticated() and not _load_active_site_config().get("site_id"):
+        session["gsc_err"] = "Cadastre e salve um site antes de conectar o Google Search Console."
+        return redirect(url_for("settings"))
+    if not _google_oauth_ready():
+        session["gsc_err"] = "Integração Google indisponível neste ambiente. Fale com o administrador do sistema."
         return redirect(url_for("settings"))
     try:
-        from google_auth_oauthlib.flow import Flow as _Flow
-        _flow = _Flow.from_client_secrets_file(
-            str(cred_file),
-            scopes=["https://www.googleapis.com/auth/webmasters.readonly"],
-            redirect_uri=url_for("gsc_callback", _external=True),
-        )
+        _flow = _build_gsc_oauth_flow()
         auth_url, state = _flow.authorization_url(
             prompt="consent", access_type="offline", include_granted_scopes="true"
         )
         session["gsc_oauth_state"] = state
+        session["gsc_oauth_site_id"] = _current_site_id()
         # Persist the PKCE code verifier (generated by newer google-auth-oauthlib)
         # so the callback can complete token exchange after recreating the flow object
         session["gsc_code_verifier"] = getattr(_flow, "code_verifier", None)
@@ -5025,23 +5646,21 @@ def gsc_connect():
 @app.route("/settings/gsc/callback")
 def gsc_callback():
     """Handle Google OAuth callback, save token, fetch available properties."""
-    cred_file = BASE_DIR / "gsc_credentials.json"
     state     = session.pop("gsc_oauth_state", None)
+    oauth_site_id = session.pop("gsc_oauth_site_id", "")
+    if _is_authenticated() and oauth_site_id:
+        session["active_site_id"] = oauth_site_id
+    _cred_file, token_file = _active_gsc_files()
     try:
-        from google_auth_oauthlib.flow import Flow as _Flow
-        _flow = _Flow.from_client_secrets_file(
-            str(cred_file),
-            scopes=["https://www.googleapis.com/auth/webmasters.readonly"],
-            state=state,
-            redirect_uri=url_for("gsc_callback", _external=True),
-        )
+        _flow = _build_gsc_oauth_flow(state=state)
         # Restore PKCE code verifier that was generated in gsc_connect
         _cv = session.pop("gsc_code_verifier", None)
         if _cv:
             _flow.code_verifier = _cv
-        _flow.fetch_token(authorization_response=request.url)
+        _flow.fetch_token(authorization_response=request.url, include_granted_scopes="true")
         creds = _flow.credentials
-        (BASE_DIR / ".gsc_token.json").write_text(creds.to_json(), encoding="utf-8")
+        token_file.parent.mkdir(parents=True, exist_ok=True)
+        token_file.write_text(creds.to_json(), encoding="utf-8")
 
         # Fetch available GSC properties + account email
         import requests as _req
@@ -5067,17 +5686,31 @@ def gsc_callback():
         except Exception:
             pass
 
-        save_site_config(
-            available_gsc_sites=sites if sites else None,
-            gsc_account_email=email if email else None,
-        )
-        # Auto-select property if none configured yet
-        from config import _load_site_config as _lsc
-        if sites and not _lsc().get("gsc_property"):
-            # Try to find a matching property for current site URL
-            base = get_site_url().rstrip("/")
-            match = next((s for s in sites if s.rstrip("/") == base), sites[0])
-            save_site_config(gsc_property=match)
+        if _is_authenticated():
+            _update_active_user_site_config(
+                available_gsc_sites=sites if sites else None,
+                gsc_account_email=email if email else None,
+            )
+        else:
+            save_site_config(
+                available_gsc_sites=sites if sites else None,
+                gsc_account_email=email if email else None,
+            )
+        # Auto-select property if none configured yet, scoped to the current user/site.
+        if sites:
+            if _is_authenticated():
+                active_cfg = _load_active_site_config()
+                if not active_cfg.get("gsc_property"):
+                    base = str(active_cfg.get("site_url") or "").rstrip("/")
+                    match = next((s for s in sites if s.rstrip("/") == base), sites[0])
+                    _update_active_user_site_config(gsc_property=match)
+            else:
+                from config import _load_site_config as _lsc
+                legacy_cfg = _lsc()
+                if not legacy_cfg.get("gsc_property"):
+                    base = get_site_url().rstrip("/")
+                    match = next((s for s in sites if s.rstrip("/") == base), sites[0])
+                    save_site_config(gsc_property=match)
 
         who = f" como {email}" if email else ""
         session["gsc_ok"] = f"Conectado{who}. {len(sites)} propriedade(s) encontrada(s)."
@@ -5090,10 +5723,16 @@ def gsc_callback():
 @app.route("/settings/gsc/disconnect")
 def gsc_disconnect():
     """Delete GSC OAuth token and clear saved property list."""
-    tok = BASE_DIR / ".gsc_token.json"
+    if _is_authenticated() and not _load_active_site_config().get("site_id"):
+        session["gsc_err"] = "Nenhum site ativo para desconectar."
+        return redirect(url_for("settings"))
+    _cred_file, tok = _active_gsc_files()
     if tok.exists():
         tok.unlink()
-    save_site_config(available_gsc_sites=None, gsc_account_email=None)
+    if _is_authenticated():
+        _update_active_user_site_config(available_gsc_sites=None, gsc_account_email=None)
+    else:
+        save_site_config(available_gsc_sites=None, gsc_account_email=None)
     session["gsc_ok"] = "Conta Google desconectada."
     return redirect(url_for("settings"))
 

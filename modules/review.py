@@ -9,11 +9,11 @@ from pathlib import Path
 from datetime import datetime
 import json
 
-from config import BASE_DIR, get_site_name, get_site_url
+from config import get_scoped_runtime_file, get_site_name, get_site_url
 
-PENDING_FILE  = BASE_DIR / "pending_changes.json"
-BRIEFS_FILE   = BASE_DIR / "blog_briefs.json"
-REPORTS_FOLDER = BASE_DIR / "reports"
+PENDING_FILE  = get_scoped_runtime_file("pending_changes.json", "publishing")
+BRIEFS_FILE   = get_scoped_runtime_file("blog_briefs.json", "content")
+REPORTS_FOLDER = get_scoped_runtime_file("_folder", "reviews").parent
 
 
 def _char_badge(text: str, min_c: int, max_c: int) -> str:
