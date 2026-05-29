@@ -13,8 +13,9 @@ from pathlib import Path
 from urllib.parse import quote, urlparse
 
 from dotenv import load_dotenv
-from flask import Flask, Response, jsonify, redirect, request, session, stream_with_context, url_for
+from flask import Flask, Response, jsonify, has_request_context, redirect, request, session, stream_with_context, url_for
 from supabase import Client, create_client
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from config import (disable_broken_local_proxy, BASE_DIR,
                     get_site_url, get_gsc_property, get_site_name, save_site_config,
@@ -33,10 +34,55 @@ for _stream in (sys.stdout, sys.stderr):
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY") or "seo-audit-local-dev-2024"
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
 
 # Allow OAuth over plain HTTP in local development
 os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")
 os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
+
+
+def _normalize_public_url(value: str) -> str:
+    url = str(value or "").strip().rstrip("/")
+    if not url:
+        return ""
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    return url
+
+
+def _public_base_url() -> str:
+    explicit = (
+        os.environ.get("APP_BASE_URL")
+        or os.environ.get("PUBLIC_APP_URL")
+        or os.environ.get("PUBLIC_BASE_URL")
+        or os.environ.get("VERCEL_URL")
+        or ""
+    )
+    base = _normalize_public_url(explicit)
+    if base:
+        return base
+    if has_request_context():
+        proto = request.headers.get("X-Forwarded-Proto", request.scheme or "https").split(",")[0].strip()
+        host = request.headers.get("X-Forwarded-Host", request.host).split(",")[0].strip()
+        if host:
+            return _normalize_public_url(f"{proto}://{host}")
+    return ""
+
+
+def _public_url_for(endpoint: str, **values) -> str:
+    base = _public_base_url()
+    path = url_for(endpoint, _external=False, **values)
+    if base:
+        return base + path
+    return url_for(endpoint, _external=True, _scheme="https", **values)
+
+
+def _public_current_url() -> str:
+    base = _public_base_url()
+    if not base:
+        return request.url
+    query = request.query_string.decode("utf-8", errors="ignore")
+    return base + request.path + (f"?{query}" if query else "")
 
 # ── Supabase singleton ────────────────────────────────────────────────────────
 
@@ -340,7 +386,7 @@ def _build_gsc_oauth_flow(state: str | None = None):
     client_id, client_secret = _google_oauth_env()
     redirect_uri = (
         os.environ.get("GOOGLE_OAUTH_REDIRECT_URI", "").strip()
-        or url_for("gsc_callback", _external=True)
+        or _public_url_for("gsc_callback")
     )
     if not client_id or not client_secret:
         credentials_file = _server_gsc_credentials_file()
@@ -1606,7 +1652,12 @@ def signup():
         email = request.form.get("email", "").strip()
         password = request.form.get("password", "")
         try:
-            res = get_supabase_public().auth.sign_up({"email": email, "password": password})
+            payload = {
+                "email": email,
+                "password": password,
+                "options": {"email_redirect_to": _public_url_for("login")},
+            }
+            res = get_supabase_public().auth.sign_up(payload)
             if _store_auth_session(res):
                 return redirect("/settings")
             return _auth_form("Criar conta", "signup", "Conta criada. Confirme seu e-mail e faça login.")
@@ -5657,7 +5708,7 @@ def gsc_callback():
         _cv = session.pop("gsc_code_verifier", None)
         if _cv:
             _flow.code_verifier = _cv
-        _flow.fetch_token(authorization_response=request.url, include_granted_scopes="true")
+        _flow.fetch_token(authorization_response=_public_current_url(), include_granted_scopes="true")
         creds = _flow.credentials
         token_file.parent.mkdir(parents=True, exist_ok=True)
         token_file.write_text(creds.to_json(), encoding="utf-8")
