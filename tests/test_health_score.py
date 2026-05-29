@@ -93,6 +93,67 @@ def test_full_audit_report_lists_all_pages_and_reason_details(monkeypatch):
     assert "atual: Curto" in html
 
 
+def test_last_full_audit_is_saved_to_active_user_site_settings(monkeypatch):
+    calls = {}
+
+    class FakeResult:
+        def __init__(self, data):
+            self.data = data
+
+    class FakeQuery:
+        def __init__(self, operation):
+            self.operation = operation
+            self.filters = {}
+
+        def select(self, *_args):
+            return self
+
+        def update(self, payload):
+            calls["update_payload"] = payload
+            return self
+
+        def eq(self, key, value):
+            self.filters[key] = value
+            return self
+
+        def limit(self, *_args):
+            return self
+
+        def execute(self):
+            if self.operation == "select":
+                return FakeResult([{"settings": {"existing": "keep"}}])
+            calls["update_filters"] = dict(self.filters)
+            return FakeResult([])
+
+    class FakeSupabase:
+        def table(self, name):
+            calls.setdefault("tables", []).append(name)
+            return FakeQuery("select" if len(calls["tables"]) == 1 else "update")
+
+    monkeypatch.setattr(dashboard, "get_supabase", lambda: FakeSupabase())
+
+    dashboard._save_last_audit(
+        {"_completed_at": "29/05/2026 18:10", "onpage": [{"url": "https://example.com"}]},
+        "ctx",
+        site_config={"user_id": "user-1", "site_id": "site-1"},
+    )
+
+    settings = calls["update_payload"]["settings"]
+    assert settings["existing"] == "keep"
+    assert settings["last_full_audit"]["onpage"][0]["url"] == "https://example.com"
+    assert settings["last_full_audit_saved_at"]
+    assert calls["update_filters"] == {"user_id": "user-1", "site_id": "site-1"}
+
+
+def test_last_full_audit_loads_from_active_site_settings(monkeypatch):
+    report = {"_completed_at": "29/05/2026 18:10", "onpage": []}
+    monkeypatch.setattr(dashboard, "_is_authenticated", lambda: True)
+    monkeypatch.setattr(dashboard, "_load_active_site_config", lambda: {"last_full_audit": report})
+
+    assert dashboard._has_last_audit() is True
+    assert dashboard._load_last_audit() == report
+
+
 def test_full_audit_screen_exposes_page_scope_and_time_estimates(monkeypatch):
     monkeypatch.setattr(dashboard, "get_site_url", lambda: "https://example.com")
     monkeypatch.setattr(config, "get_priority_pages", lambda: ["/marca", "/produto"])

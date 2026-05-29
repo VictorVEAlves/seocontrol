@@ -4012,12 +4012,39 @@ def _last_audit_file(context_key: str | None = None) -> Path:
 
 
 def _has_last_audit() -> bool:
+    if _is_authenticated() and (_load_active_site_config() or {}).get("last_full_audit"):
+        return True
     if _last_audit_file().exists():
         return True
     return (not _is_authenticated()) and _LEGACY_LAST_AUDIT_FILE.exists()
 
 
-def _save_last_audit(results: dict, context_key: str | None = None) -> None:
+def _save_last_audit(results: dict, context_key: str | None = None,
+                     site_config: dict | None = None) -> None:
+    if site_config and site_config.get("user_id") and site_config.get("site_id"):
+        try:
+            report = _json_mod.loads(_json_mod.dumps(results, ensure_ascii=False, default=str))
+            uid = str(site_config.get("user_id"))
+            site_id = str(site_config.get("site_id"))
+            rows = (
+                get_supabase().table("user_site_settings")
+                .select("settings")
+                .eq("user_id", uid)
+                .eq("site_id", site_id)
+                .limit(1)
+                .execute().data
+                or []
+            )
+            settings = dict((rows[0].get("settings") if rows else {}) or {})
+            settings["last_full_audit"] = report
+            settings["last_full_audit_saved_at"] = datetime.now(timezone.utc).isoformat()
+            get_supabase().table("user_site_settings").update({
+                "settings": settings,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("user_id", uid).eq("site_id", site_id).execute()
+            return
+        except Exception:
+            pass
     try:
         import json as _jj
         _LAST_AUDIT_DIR.mkdir(parents=True, exist_ok=True)
@@ -4029,6 +4056,11 @@ def _save_last_audit(results: dict, context_key: str | None = None) -> None:
 
 
 def _load_last_audit(context_key: str | None = None) -> dict | None:
+    if context_key is None and _is_authenticated():
+        cfg = _load_active_site_config()
+        report = cfg.get("last_full_audit")
+        if isinstance(report, dict):
+            return report
     try:
         import json as _jj
         path = _last_audit_file(context_key)
@@ -4383,7 +4415,7 @@ def _run_full_audit(job_id: str, q: _queue_mod.Queue, scope_key: str = "priority
     except Exception as exc:
         results["_persist_error"] = str(exc)
         emit("persist", "Kanban & banco de dados", "warn", f"Relatório gerado, mas Kanban não foi atualizado: {str(exc)[:120]}")
-    _save_last_audit(results, audit_context_key)
+    _save_last_audit(results, audit_context_key, site_config=site_config)
     q.put({"done": True, "health": health})
     with _AUDIT_LOCK:
         if job_id in _AUDIT_JOBS:
@@ -4511,7 +4543,7 @@ function startAudit() {
           es.close();
           document.getElementById('start-btn').textContent = 'Nova Auditoria';
           document.getElementById('start-btn').disabled = false;
-          window.location.href = '/full-audit';
+          window.location.href = '/full-audit/report/last';
           return;
         }
         handleStep(ev);
