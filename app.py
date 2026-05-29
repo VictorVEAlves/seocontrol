@@ -357,6 +357,14 @@ def _active_gsc_files() -> tuple[Path, Path]:
     return cred_file, token_file
 
 
+def _site_has_gsc_token(cfg: dict | None = None) -> bool:
+    cfg = cfg or (_load_active_site_config() if _is_authenticated() else {})
+    if cfg.get("gsc_token_json"):
+        return True
+    token_path = str(cfg.get("gsc_token_file") or "").strip()
+    return bool(token_path and Path(token_path).exists())
+
+
 GSC_OAUTH_SCOPES = [
     "https://www.googleapis.com/auth/webmasters.readonly",
     "https://www.googleapis.com/auth/userinfo.email",
@@ -444,8 +452,7 @@ def _dashboard_setup_status() -> tuple[bool, str, dict]:
         return False, "Cadastre o site antes de carregar dados do Search Console.", cfg
     if not cfg.get("gsc_property"):
         return False, "Selecione a propriedade do Google Search Console nas Configurações.", cfg
-    token_file = Path(str(cfg.get("gsc_token_file") or ""))
-    if not token_file.exists():
+    if not _site_has_gsc_token(cfg):
         return False, "Conecte o Google Search Console para este site antes de carregar o dashboard.", cfg
     return True, "", cfg
 
@@ -1444,8 +1451,7 @@ def _tool_setup_error(module: str) -> str:
     if module in SITE_REQUIRED_TOOL_MODULES and not cfg.get("site_url"):
         return "Cadastre um site em Configurações antes de executar esta ferramenta."
     if module in GSC_REQUIRED_TOOL_MODULES:
-        token_file = Path(str(cfg.get("gsc_token_file") or ""))
-        if not cfg.get("gsc_property") or not token_file.exists():
+        if not cfg.get("gsc_property") or not _site_has_gsc_token(cfg):
             return "Conecte o Google Search Console deste site antes de executar esta ferramenta."
     return ""
 
@@ -1749,7 +1755,7 @@ def _dashboard_onboarding(message: str, cfg: dict | None = None):
     has_site = bool(cfg.get("site_url"))
     steps = [
         ("1", "Cadastre o site", "Informe URL, nome do cliente, páginas prioritárias e contexto do negócio.", has_site),
-        ("2", "Conecte o Google Search Console", "Autorize a conta Google do cliente com acesso ao Search Console.", bool(cfg.get("gsc_token_file") and Path(str(cfg.get("gsc_token_file"))).exists())),
+        ("2", "Conecte o Google Search Console", "Autorize a conta Google do cliente com acesso ao Search Console.", _site_has_gsc_token(cfg)),
         ("3", "Carregue o dashboard", "Depois disso, os dados exibidos serão apenas do site ativo deste usuário.", False),
     ]
     cards = ""
@@ -5399,7 +5405,7 @@ def settings():
         if is_new_site else _active_gsc_files()
     )
     oauth_ready      = _google_oauth_ready()
-    has_token        = gsc_token_file.exists()
+    has_token        = _site_has_gsc_token(cfg)
     available_sites  = cfg.get("available_gsc_sites") or []
     gsc_account      = cfg.get("gsc_account_email", "")
     current_site_name = cfg.get("site_name", "")
@@ -5721,8 +5727,12 @@ def gsc_callback():
         _flow = _build_gsc_oauth_flow(state=state)
         _flow.fetch_token(authorization_response=_public_current_url(), include_granted_scopes="true")
         creds = _flow.credentials
-        token_file.parent.mkdir(parents=True, exist_ok=True)
-        token_file.write_text(creds.to_json(), encoding="utf-8")
+        token_json = creds.to_json()
+        if _is_authenticated():
+            _update_active_user_site_config(gsc_token_json=token_json)
+        else:
+            token_file.parent.mkdir(parents=True, exist_ok=True)
+            token_file.write_text(token_json, encoding="utf-8")
 
         # Fetch available GSC properties + account email
         import requests as _req
@@ -5790,9 +5800,12 @@ def gsc_disconnect():
         return _redirect_public_or_local("settings")
     _cred_file, tok = _active_gsc_files()
     if tok.exists():
-        tok.unlink()
+        try:
+            tok.unlink()
+        except OSError:
+            pass
     if _is_authenticated():
-        _update_active_user_site_config(available_gsc_sites=None, gsc_account_email=None)
+        _update_active_user_site_config(available_gsc_sites=None, gsc_account_email=None, gsc_token_json=None)
     else:
         save_site_config(available_gsc_sites=None, gsc_account_email=None)
     session["gsc_ok"] = "Conta Google desconectada."

@@ -236,6 +236,17 @@ def get_gsc_token_file() -> Path:
     )
 
 
+def get_gsc_token_json() -> str:
+    """Return the OAuth token JSON stored for the active user/site, when available."""
+    cfg = _load_site_config()
+    return str(cfg.get("gsc_token_json") or "")
+
+
+def has_gsc_token() -> bool:
+    """Return whether the active site has a usable GSC OAuth token."""
+    return bool(get_gsc_token_json() or get_gsc_token_file().exists())
+
+
 def get_site_name() -> str:
     """Short display name extracted from the configured site URL."""
     from urllib.parse import urlparse as _up

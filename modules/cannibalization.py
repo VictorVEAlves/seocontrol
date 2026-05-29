@@ -14,12 +14,13 @@ Strategy:
 from __future__ import annotations
 
 import os
+import json
 from collections import defaultdict
 from datetime import date, timedelta
 from urllib.parse import quote, urlparse
 
 from config import (disable_broken_local_proxy, get_brand_clusters, get_gsc_property,
-                    get_gsc_credentials_file, get_gsc_token_file)
+                    get_gsc_credentials_file, get_gsc_token_file, get_gsc_token_json)
 
 disable_broken_local_proxy()
 
@@ -51,8 +52,14 @@ def _build_session():
 
     credentials_file = get_gsc_credentials_file()
     token_file = get_gsc_token_file()
+    token_json = get_gsc_token_json()
     creds = None
-    if token_file.exists():
+    if token_json:
+        try:
+            creds = Credentials.from_authorized_user_info(json.loads(token_json), _SCOPES)
+        except Exception:
+            pass
+    elif token_file.exists():
         try:
             creds = Credentials.from_authorized_user_file(str(token_file), _SCOPES)
         except Exception:
@@ -70,8 +77,9 @@ def _build_session():
                 )
             flow = InstalledAppFlow.from_client_secrets_file(str(credentials_file), _SCOPES)
             creds = flow.run_local_server(port=0)
-        token_file.parent.mkdir(parents=True, exist_ok=True)
-        token_file.write_text(creds.to_json(), encoding="utf-8")
+        if not token_json:
+            token_file.parent.mkdir(parents=True, exist_ok=True)
+            token_file.write_text(creds.to_json(), encoding="utf-8")
 
     authed = google.auth.transport.requests.AuthorizedSession(creds)
     authed.trust_env = False

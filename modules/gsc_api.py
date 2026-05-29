@@ -24,7 +24,7 @@ from urllib.parse import quote
 from config import (BASE_DIR, GEMINI_API_KEY,
                     disable_broken_local_proxy, get_site_url, get_gsc_property, get_site_name,
                     get_brand_clusters, get_gsc_credentials_file, get_gsc_token_file,
-                    get_site_id, get_site_owner_user_id)
+                    get_gsc_token_json, get_site_id, get_site_owner_user_id)
 
 
 def _nuke_proxies() -> None:
@@ -56,6 +56,30 @@ def _credentials_file() -> Path:
 
 def _token_file() -> Path:
     return get_gsc_token_file()
+
+
+def _load_authorized_credentials(token_file: Path):
+    from google.oauth2.credentials import Credentials
+
+    token_json = get_gsc_token_json()
+    if token_json:
+        try:
+            return Credentials.from_authorized_user_info(json.loads(token_json), SCOPES)
+        except Exception:
+            return None
+    if token_file.exists():
+        try:
+            return Credentials.from_authorized_user_file(str(token_file), SCOPES)
+        except Exception:
+            return None
+    return None
+
+
+def _persist_authorized_credentials(creds, token_file: Path) -> None:
+    if get_gsc_token_json():
+        return
+    token_file.parent.mkdir(parents=True, exist_ok=True)
+    token_file.write_text(creds.to_json(), encoding="utf-8")
 
 
 def _dashboard_cache_file(kind: str, period_days: int) -> Path:
@@ -107,11 +131,7 @@ def _get_credentials(silent: bool = False):
     creds = None
     token_file = _token_file()
     credentials_file = _credentials_file()
-    if token_file.exists():
-        try:
-            creds = Credentials.from_authorized_user_file(str(token_file), SCOPES)
-        except Exception:
-            pass
+    creds = _load_authorized_credentials(token_file)
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
@@ -132,8 +152,7 @@ def _get_credentials(silent: bool = False):
             flow = InstalledAppFlow.from_client_secrets_file(str(credentials_file), SCOPES)
             creds = flow.run_local_server(port=0)
 
-        token_file.parent.mkdir(parents=True, exist_ok=True)
-        token_file.write_text(creds.to_json(), encoding="utf-8")
+        _persist_authorized_credentials(creds, token_file)
 
     return creds
 
@@ -160,8 +179,7 @@ def _build_session(silent: bool = False):
         auth_req = google.auth.transport.requests.Request(session=base)
         creds.refresh(auth_req)
         token_file = _token_file()
-        token_file.parent.mkdir(parents=True, exist_ok=True)
-        token_file.write_text(creds.to_json(), encoding="utf-8")
+        _persist_authorized_credentials(creds, token_file)
 
     authed = google.auth.transport.requests.AuthorizedSession(creds)
     authed.trust_env = False
