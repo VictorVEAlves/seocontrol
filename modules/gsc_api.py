@@ -193,6 +193,7 @@ def _get_gsc_bearer(timeout: int = 20) -> str:
     refresh can never freeze the caller. Raises on failure or timeout.
     """
     import concurrent.futures as _cf
+    import contextvars as _ctx
 
     def _work() -> str:
         session = _build_session(silent=True)
@@ -201,9 +202,10 @@ def _get_gsc_bearer(timeout: int = 20) -> str:
             raise RuntimeError("token GSC vazio após autenticação")
         return creds.token
 
+    runtime_context = _ctx.copy_context()
     _ex = _cf.ThreadPoolExecutor(max_workers=1)
     try:
-        return _ex.submit(_work).result(timeout=timeout)
+        return _ex.submit(lambda: runtime_context.run(_work)).result(timeout=timeout)
     except _cf.TimeoutError:
         raise TimeoutError(f"autenticação GSC excedeu {timeout}s")
     finally:
@@ -845,6 +847,8 @@ def get_dashboard_data(period_days: int = 28) -> dict:
 
     print(f"    Dashboard: {cur_start} → {cur_end} vs {prev_start} → {prev_end}")
 
+    query_url = _gsc_query_url()
+
     def _par_fetch(start: str, end: str, dims: list, limit: int) -> list:
         """Thread-safe GSC fetch — own session per thread, direct Bearer header."""
         import requests as _r
@@ -854,7 +858,7 @@ def get_dashboard_data(period_days: int = 28) -> dict:
                 "dimensions": dims, "rowLimit": limit, "startRow": 0}
         try:
             resp = _s.post(
-                _gsc_query_url(),
+                query_url,
                 json=body,
                 headers={"Authorization": f"Bearer {_bearer}"},
                 timeout=15,
