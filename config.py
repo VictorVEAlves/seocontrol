@@ -454,11 +454,12 @@ REPORTS_FOLDER = str(BASE_DIR / "reports")
 
 # Rastreamento
 MAX_CRAWL_PAGES = 1000
-CRAWL_DELAY = 1.0  # segundos entre requisições
-REQUEST_TIMEOUT = 15
+CRAWL_DELAY = float(os.environ.get("SEO_CRAWL_DELAY", "1.0"))  # segundos entre requisicoes
+REQUEST_TIMEOUT = float(os.environ.get("SEO_REQUEST_TIMEOUT", "15"))
+CRAWL_RETRIES = int(os.environ.get("SEO_CRAWL_RETRIES", "2"))
 USER_AGENT = os.environ.get(
     "SEO_CRAWLER_USER_AGENT",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/125.0.0.0 Safari/537.36 SEOAudit/1.0",
+    "Chrome/125.0.0.0 Safari/537.36",
 )

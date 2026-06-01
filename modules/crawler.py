@@ -6,20 +6,35 @@ from urllib.parse import urljoin, urlparse
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import get_site_url, CRAWL_DELAY, REQUEST_TIMEOUT, USER_AGENT
+from config import get_site_url, CRAWL_DELAY, REQUEST_TIMEOUT, CRAWL_RETRIES, USER_AGENT
 
-_session = requests.Session()
-_session.headers.update({
+BASE_HEADERS = {
     "User-Agent": USER_AGENT,
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "pt-BR,pt;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
     "Cache-Control": "no-cache",
+    "Connection": "close",
+    "DNT": "1",
     "Pragma": "no-cache",
-})
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+}
 
 SKIP_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp", ".avif",
                    ".bmp", ".pdf", ".css", ".js", ".ico", ".woff", ".woff2",
                    ".ttf", ".xml", ".mp4", ".webm", ".mov", ".zip"}
+
+
+def _request_headers(url: str) -> dict:
+    parsed = urlparse(url)
+    origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else get_site_url()
+    headers = dict(BASE_HEADERS)
+    if origin:
+        headers["Referer"] = origin.rstrip("/") + "/"
+    return headers
 
 
 def get_page(url: str) -> tuple:
@@ -30,24 +45,35 @@ def get_page(url: str) -> tuple:
       _redirect_status    : str — HTTP status of first redirect (e.g. "301", "302"), or ""
     Returns (0, None, {}, url) on connection error.
     """
-    try:
-        time.sleep(CRAWL_DELAY)
-        resp = _session.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True)
-        final_url = resp.url
-        content_type = resp.headers.get("content-type", "")
-        soup = None
-        if resp.ok and "text/html" in content_type:
-            soup = BeautifulSoup(resp.text, "lxml")
-        headers = dict(resp.headers)
-        headers["_content_size_bytes"] = len(resp.content)
-        headers["_redirect_status"] = str(resp.history[0].status_code) if resp.history else ""
-        return resp.status_code, soup, headers, final_url
-    except requests.RequestException as exc:
-        headers = {
-            "_fetch_error": str(exc),
-            "_fetch_error_type": exc.__class__.__name__,
-        }
-        return 0, None, headers, url
+    attempts = max(1, int(CRAWL_RETRIES) + 1)
+    errors = []
+    for attempt in range(attempts):
+        try:
+            time.sleep(CRAWL_DELAY if attempt == 0 else min(2.0, CRAWL_DELAY + attempt * 0.5))
+            with requests.Session() as session:
+                session.headers.update(_request_headers(url))
+                resp = session.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+            final_url = resp.url
+            content_type = resp.headers.get("content-type", "")
+            soup = None
+            if resp.ok and "text/html" in content_type:
+                soup = BeautifulSoup(resp.text, "lxml")
+            headers = dict(resp.headers)
+            headers["_content_size_bytes"] = len(resp.content)
+            headers["_redirect_status"] = str(resp.history[0].status_code) if resp.history else ""
+            headers["_fetch_attempts"] = attempt + 1
+            return resp.status_code, soup, headers, final_url
+        except requests.RequestException as exc:
+            errors.append(f"{exc.__class__.__name__}: {exc}")
+            if attempt < attempts - 1:
+                continue
+            headers = {
+                "_fetch_error": str(exc),
+                "_fetch_error_type": exc.__class__.__name__,
+                "_fetch_errors": " | ".join(errors[-3:]),
+                "_fetch_attempts": attempts,
+            }
+            return 0, None, headers, url
 
 
 def is_internal(url: str) -> bool:
