@@ -165,6 +165,10 @@ def test_full_audit_screen_exposes_page_scope_and_time_estimates(monkeypatch):
     assert "1.000 páginas do site (50 a 65 minutos)" in html
     assert "2.000 páginas do site (1h40 a 2h10)" in html
 
+    assert "function finishAuditRedirect()" in html
+    assert "function scheduleReportFallback" in html
+    assert "ev.step === 'persist'" in html
+
 
 def test_select_full_audit_pages_prefers_priority_pages_then_sitemap(monkeypatch):
     monkeypatch.setattr(dashboard, "get_site_url", lambda: "https://example.com")

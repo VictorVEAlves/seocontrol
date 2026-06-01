@@ -4405,6 +4405,11 @@ def _run_full_audit(job_id: str, q: _queue_mod.Queue, scope_key: str = "priority
     health = _health_score(results)
     results["_health"] = health
     results["_completed_at"] = _dt_audit.datetime.now().strftime("%d/%m/%Y %H:%M")
+    with _AUDIT_LOCK:
+        if job_id in _AUDIT_JOBS:
+            _AUDIT_JOBS[job_id].update({"status": "finalizing", "result": results})
+    _save_last_audit(results, audit_context_key, site_config=site_config)
+    emit("persist", "Kanban & banco de dados", "running", "Salvando relatório e tarefas no Kanban...")
     try:
         from modules import supabase_store as _ss
         scope_info = results.get("_audit_scope") or {}
@@ -4511,6 +4516,8 @@ var _jobId = null;
 var _stepOrder = ['gsc','drops','onpage','content','backlog','ai','persist'];
 var _stepDone  = 0;
 var _stepData  = {};
+var _auditCompleted = false;
+var _persistFallbackTimer = null;
 var _auditDurations = __AUDIT_DURATIONS__;
 
 function updateAuditEstimate() {
@@ -4520,8 +4527,26 @@ function updateAuditEstimate() {
 }
 updateAuditEstimate();
 
+function finishAuditRedirect() {
+  if (_auditCompleted) return;
+  _auditCompleted = true;
+  if (_persistFallbackTimer) clearTimeout(_persistFallbackTimer);
+  document.getElementById('start-btn').textContent = 'Nova Auditoria';
+  document.getElementById('start-btn').disabled = false;
+  window.location.href = '/full-audit/report/last';
+}
+
+function scheduleReportFallback(delayMs) {
+  if (_auditCompleted || _persistFallbackTimer) return;
+  _persistFallbackTimer = setTimeout(finishAuditRedirect, delayMs || 10000);
+}
+
 function startAudit() {
   var scope = document.getElementById('audit-page-scope').value;
+  _auditCompleted = false;
+  _persistFallbackTimer = null;
+  _stepDone = 0;
+  _stepData = {};
   document.getElementById('start-btn').disabled = true;
   document.getElementById('start-btn').textContent = 'Rodando...';
   document.getElementById('progress-panel').style.display = 'block';
@@ -4541,15 +4566,17 @@ function startAudit() {
         if (ev.keepalive) return;
         if (ev.done) {
           es.close();
-          document.getElementById('start-btn').textContent = 'Nova Auditoria';
-          document.getElementById('start-btn').disabled = false;
-          window.location.href = '/full-audit/report/last';
+          finishAuditRedirect();
           return;
         }
         handleStep(ev);
       };
       es.onerror = function() {
         es.close();
+        if (_stepDone >= _stepOrder.length - 1 || _persistFallbackTimer) {
+          scheduleReportFallback(5000);
+          return;
+        }
         document.getElementById('start-btn').disabled = false;
         document.getElementById('start-btn').textContent = 'Tentar novamente';
       };
@@ -4575,10 +4602,15 @@ function handleStep(ev) {
     '<span class="step-label">' + ev.label + '</span>' +
     '<span class="step-summary">' + (ev.summary || '') + '</span>' +
     '<span class="step-badge ' + ev.status + '">' + ev.status + '</span>';
-  if (ev.status === 'ok' || ev.status === 'error' || ev.status === 'warn') _stepDone++;
+  var isTerminal = (ev.status === 'ok' || ev.status === 'error' || ev.status === 'warn');
+  var wasTerminal = (_stepData[ev.step] === 'ok' || _stepData[ev.step] === 'error' || _stepData[ev.step] === 'warn');
+  if (isTerminal && !wasTerminal) _stepDone++;
+  _stepData[ev.step] = ev.status;
   var pct = Math.round(_stepDone / _stepOrder.length * 100);
   document.getElementById('prog-bar').style.width = pct + '%';
   document.getElementById('prog-pct').textContent = pct + '%';
+  if (ev.step === 'persist' && ev.status === 'running') scheduleReportFallback(10000);
+  if (ev.step === 'persist' && isTerminal) scheduleReportFallback(800);
 }
 </script>"""
     body = body.replace("__AUDIT_OPTIONS__", options_html)
