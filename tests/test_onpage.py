@@ -69,6 +69,22 @@ def test_onpage_ignores_tracking_pixels_but_flags_content_image_without_alt(monk
     assert "1 imagens sem alt text" in result["warnings"]
 
 
+def test_onpage_includes_fetch_error_details_when_request_fails(monkeypatch):
+    def fake_get_page(url):
+        return 0, None, {
+            "_fetch_error_type": "ConnectTimeout",
+            "_fetch_error": "HTTPSConnectionPool(host='example.com', port=443): timed out",
+        }, url
+
+    monkeypatch.setattr("modules.onpage.get_page", fake_get_page)
+
+    result = onpage.audit_page("https://example.com/lacoste")
+
+    assert result["status"] == 0
+    assert "ConnectTimeout" in result["issues"][0]
+    assert "timed out" in result["issues"][0]
+
+
 def test_audit_pages_reports_progress_without_orphan_inference(monkeypatch):
     def fake_audit_page(url, collect_internal_links=False):
         return {

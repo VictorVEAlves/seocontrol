@@ -11,7 +11,10 @@ from config import get_site_url, CRAWL_DELAY, REQUEST_TIMEOUT, USER_AGENT
 _session = requests.Session()
 _session.headers.update({
     "User-Agent": USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "pt-BR,pt;q=0.9",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
 })
 
 SKIP_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp", ".avif",
@@ -39,8 +42,12 @@ def get_page(url: str) -> tuple:
         headers["_content_size_bytes"] = len(resp.content)
         headers["_redirect_status"] = str(resp.history[0].status_code) if resp.history else ""
         return resp.status_code, soup, headers, final_url
-    except requests.RequestException:
-        return 0, None, {}, url
+    except requests.RequestException as exc:
+        headers = {
+            "_fetch_error": str(exc),
+            "_fetch_error_type": exc.__class__.__name__,
+        }
+        return 0, None, headers, url
 
 
 def is_internal(url: str) -> bool:

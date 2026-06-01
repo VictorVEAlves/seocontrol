@@ -61,6 +61,12 @@ def audit_page(url: str, collect_internal_links: bool = False) -> dict:
     }
 
     if not soup:
+        fetch_error = str(headers.get("_fetch_error") or "").strip()
+        fetch_error_type = str(headers.get("_fetch_error_type") or "").strip()
+        if fetch_error:
+            detail = f"{fetch_error_type}: {fetch_error}" if fetch_error_type else fetch_error
+            result["issues"].append(f"Pagina inacessivel (status {status}: {detail[:180]})")
+            return result
         result["issues"].append(f"Página inacessível (status {status})")
         return result
 
