@@ -92,12 +92,17 @@ def compact_results(results: dict[str, Any]) -> dict[str, Any]:
 
 
 def save_analysis(analysis: dict[str, Any]) -> None:
-    analysis_file = _analysis_file()
-    analysis_file.parent.mkdir(parents=True, exist_ok=True)
-    analysis_file.write_text(
-        json.dumps(analysis, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    try:
+        analysis_file = _analysis_file()
+        analysis_file.parent.mkdir(parents=True, exist_ok=True)
+        analysis_file.write_text(
+            json.dumps(analysis, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except OSError:
+        # Em ambientes serverless, o relatorio da auditoria ja carrega esta
+        # analise; o arquivo auxiliar em .runtime nao deve interromper o fluxo.
+        return
 
 
 def run(

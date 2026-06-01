@@ -46,8 +46,13 @@ def call_json(
 
     errors = []
     with _prompt_lock:
-        previous_prompt = content_generator.SYSTEM_PROMPT
-        content_generator.SYSTEM_PROMPT = system_prompt
+        prompt_attr = (
+            "SYSTEM_PROMPT_OVERRIDE"
+            if hasattr(content_generator, "SYSTEM_PROMPT_OVERRIDE")
+            else "SYSTEM_PROMPT"
+        )
+        previous_prompt = getattr(content_generator, prompt_attr, None)
+        setattr(content_generator, prompt_attr, system_prompt)
         try:
             sequence = get_provider_sequence(provider)
             if provider and api_key and (not sequence or sequence[0] != (provider, api_key)):
@@ -77,4 +82,4 @@ def call_json(
             result["_ai_provider"] = provider
             return result
         finally:
-            content_generator.SYSTEM_PROMPT = previous_prompt
+            setattr(content_generator, prompt_attr, previous_prompt)
