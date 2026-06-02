@@ -596,6 +596,7 @@ def _enhance_ideas_chunk(
 
 
 def save_ideas(ideas: list[dict]) -> None:
+    IDEAS_FILE.parent.mkdir(parents=True, exist_ok=True)
     existing = []
     if IDEAS_FILE.exists():
         try:

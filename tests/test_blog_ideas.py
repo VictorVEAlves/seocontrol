@@ -98,3 +98,19 @@ def test_blog_ideas_batch_ai_enrichment_keeps_titles_distinct(monkeypatch):
     assert result[0]["h1"] != result[1]["h1"]
     assert result[0]["angle"] == "autenticidade"
     assert result[1]["provider"] == "query_suggester+groq"
+
+
+def test_blog_ideas_save_creates_runtime_directory(monkeypatch, tmp_path):
+    ideas_file = tmp_path / "runtime" / "content" / "site-key" / "blog_ideas.json"
+    monkeypatch.setattr(blog_ideas, "IDEAS_FILE", ideas_file)
+
+    blog_ideas.save_ideas([
+        {
+            "url_slug": "melhores-tenis-lacoste",
+            "h1": "Melhores tenis Lacoste",
+            "primary_query": "tenis lacoste",
+        }
+    ])
+
+    assert ideas_file.exists()
+    assert "melhores-tenis-lacoste" in ideas_file.read_text(encoding="utf-8")
