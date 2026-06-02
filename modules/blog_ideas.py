@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import time
 from collections import defaultdict
@@ -10,6 +11,8 @@ from config import (get_brand_aliases, get_business_context, get_product_terms,
 
 IDEAS_FILE = get_scoped_runtime_file("blog_ideas.json", "content")
 AI_BATCH_SIZE = 3
+DEFAULT_AI_QUERY_LIMIT = 60
+DEFAULT_AI_EXISTING_CONTENT_LIMIT = 25
 
 QUESTION_TERMS = {
     "como", "qual", "quais", "quando", "onde", "porque", "por que",
@@ -140,7 +143,7 @@ Como decidir as pautas:
 - Nao invente volume, preco, estoque, promocao ou dados externos.
 - Use PT-BR natural.
 
-Formato obrigatorio:
+Formato obrigatorio, compacto:
 {{
   "ideas": [
     {{
@@ -150,22 +153,22 @@ Formato obrigatorio:
       "primary_query": "...",
       "source_queries": ["...", "..."],
       "search_intent": "informational | commercial investigation | transactional support | seasonal",
-      "audience_question": "...",
       "angle": "...",
       "content_type": "guia | comparativo | checklist | faq | tendencia | sazonal | evergreen",
       "seasonality": "evergreen ou janela sazonal",
-      "recommended_publish_month": "YYYY-MM ou evergreen",
       "opportunity_reason": "...",
-      "content_gap": "...",
       "priority": 0,
       "sections": ["...", "..."],
-      "faq": ["...", "..."],
-      "entities": ["...", "..."],
-      "internal_links": [{{"anchor": "...", "url": "...", "reason": "..."}}],
-      "recommended_products_or_categories": ["...", "..."]
+      "faq": ["...", "..."]
     }}
   ]
 }}
+
+Limites:
+- No maximo 5 source_queries por ideia.
+- No maximo 4 sections por ideia.
+- No maximo 3 faq por ideia.
+- Seja direto. Nao inclua campos extras.
 
 Retorne APENAS JSON valido, sem markdown e sem texto fora do JSON."""
 
@@ -636,6 +639,33 @@ def _query_metrics(source_queries: list[str], query_index: dict[str, dict]) -> d
     return {"impressions": impressions, "clicks": clicks, "avg_position": avg_position}
 
 
+def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.environ.get(name, default))
+    except Exception:
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+def _ai_query_limit(top: int) -> int:
+    default = min(80, max(DEFAULT_AI_QUERY_LIMIT, int(top or 0) * 6))
+    return _env_int("BLOG_IDEAS_AI_QUERY_LIMIT", default, 20, 120)
+
+
+def _ai_existing_content_limit() -> int:
+    return _env_int("BLOG_IDEAS_EXISTING_CONTENT_LIMIT", DEFAULT_AI_EXISTING_CONTENT_LIMIT, 0, 80)
+
+
+def _query_row_for_ai(row: dict) -> dict:
+    return {
+        "q": row.get("query"),
+        "imp": row.get("impressions", 0),
+        "clk": row.get("clicks", 0),
+        "pos": row.get("position", 0),
+        "tags": row.get("intent_tags", []),
+    }
+
+
 def _normalize_ai_ideas(ai_data: dict, query_rows: list[dict], top: int) -> list[dict]:
     query_index = {str(row.get("query", "")).casefold(): row for row in query_rows}
     ideas = []
@@ -990,19 +1020,22 @@ def generate_strategic_ideas_with_ai(
 ) -> tuple[list[dict], str | None]:
     from modules.ai_layer import call_json
 
-    query_rows = _compact_queries(gsc_data, limit=180)
+    query_limit = _ai_query_limit(top)
+    query_rows = _compact_queries(gsc_data, limit=query_limit)
     if not query_rows:
         return [], "Nenhuma query disponivel para a IA analisar."
+    existing_limit = _ai_existing_content_limit()
     payload = {
         "requested_ideas": top,
-        "queries": query_rows,
+        "queries": [_query_row_for_ai(row) for row in query_rows],
         "seasonality": _seasonality_context(),
-        "existing_content": _load_existing_content(limit=80),
-        "configured_brands": sorted(_brand_keywords())[:80],
-        "configured_product_terms": sorted(get_product_terms())[:80],
+        "existing_content": _load_existing_content(limit=existing_limit) if existing_limit else [],
+        "configured_brands": sorted(_brand_keywords())[:50],
+        "configured_product_terms": sorted(get_product_terms())[:50],
         "instructions": (
+            "Legenda das queries: q=query, imp=impressoes, clk=cliques, pos=posicao media, tags=intencao provavel. "
             "Estude as consultas como um conjunto. Crie clusters e ideias editoriais que cubram duvidas, "
-            "sazonalidade e lacunas, evitando repetir conteudos existentes."
+            "sazonalidade e lacunas, evitando repetir conteudos existentes. Responda em JSON compacto."
         ),
     }
     ai_data = call_json(

@@ -152,7 +152,42 @@ def test_blog_ideas_ai_strategic_studies_queries_without_brand_product(monkeypat
     assert result[0]["provider"] == "query_suggester+gemini"
     assert result[0]["queries"] == ["como saber tamanho certo tenis", "tenis forma grande"]
     assert captured["payload"]["existing_content"][0]["title"] == "Ideia antiga sobre looks de inverno"
-    assert "duvida" in captured["payload"]["queries"][0]["intent_tags"]
+    assert "duvida" in captured["payload"]["queries"][0]["tags"]
+
+
+def test_blog_ideas_ai_prompt_uses_limited_compact_queries(monkeypatch):
+    import json
+
+    captured = {}
+
+    def fake_call_json(**kwargs):
+        payload = json.loads(kwargs["prompt"])
+        captured["payload"] = payload
+        return {
+            "_ai_enhanced": False,
+            "_ai_error": "sem chamada real",
+        }
+
+    monkeypatch.setenv("BLOG_IDEAS_AI_QUERY_LIMIT", "25")
+    monkeypatch.setattr("modules.ai_layer.call_json", fake_call_json)
+    monkeypatch.setattr(blog_ideas, "_load_existing_content", lambda limit=25: [])
+
+    rows = [
+        {"query": f"como escolher tenis modelo {idx}", "impressions": 1000 - idx, "clicks": 10, "position": 8}
+        for idx in range(80)
+    ]
+
+    result, error = blog_ideas.generate_strategic_ideas_with_ai(
+        {"top_queries": rows},
+        top=10,
+        provider="gemini",
+        api_key="fake-key",
+    )
+
+    assert result == []
+    assert error == "sem chamada real"
+    assert len(captured["payload"]["queries"]) == 25
+    assert set(captured["payload"]["queries"][0].keys()) == {"q", "imp", "clk", "pos", "tags"}
 
 
 def test_blog_ideas_falls_back_to_query_clusters_when_ai_fails(monkeypatch):
