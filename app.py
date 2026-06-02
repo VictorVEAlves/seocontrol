@@ -2635,7 +2635,12 @@ def blog_ideas():
     except Exception as exc:
         return error_page(str(exc)), 503
 
-    STATUS_MAP = {"pending": ("badge-medium", "pendente"), "approved": ("badge-low", "aprovado"), "published": ("badge-info", "publicado")}
+    STATUS_MAP = {
+        "idea": ("badge-info", "ideia"),
+        "pending": ("badge-medium", "pendente"),
+        "approved": ("badge-low", "aprovado"),
+        "published": ("badge-info", "publicado"),
+    }
 
     cards_html = ""
     for row in rows:

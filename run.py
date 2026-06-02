@@ -477,7 +477,7 @@ def run_blog_ideas(
         api_key=api_key,
     )
     if not ideas:
-        print("   !  nenhuma ideia encontrada com marca + produto")
+        print("   !  nenhuma ideia encontrada nas consultas analisadas")
         return []
     for idx, idea in enumerate(ideas[:top], start=1):
         mode = "IA" if idea.get("ai_enhanced") else "base"
@@ -485,7 +485,7 @@ def run_blog_ideas(
         print(f"       query: {idea.get('primary_query', '')}")
         if idea.get("_ai_error"):
             print(f"       IA indisponivel: {idea.get('_ai_error')}")
-    print("   ok ideias salvas no arquivo de ideias do site atual")
+    print("   ok ideias geradas para o site atual")
     return ideas
 
 

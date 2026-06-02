@@ -100,6 +100,61 @@ def test_blog_ideas_batch_ai_enrichment_keeps_titles_distinct(monkeypatch):
     assert result[1]["provider"] == "query_suggester+groq"
 
 
+def test_blog_ideas_ai_strategic_studies_queries_without_brand_product(monkeypatch):
+    import json
+
+    captured = {}
+
+    def fake_call_json(**kwargs):
+        payload = json.loads(kwargs["prompt"])
+        captured["payload"] = payload
+        return {
+            "_ai_enhanced": True,
+            "_ai_provider": "gemini",
+            "_ai_generated_at": "2026-06-02T10:00:00",
+            "ideas": [
+                {
+                    "h1": "Como escolher o tamanho certo de tenis online",
+                    "meta_title": "Como escolher o tamanho certo de tenis online",
+                    "meta_description": "Veja como comparar medidas, formas e sinais de conforto antes de comprar tenis online com mais seguranca.",
+                    "primary_query": "como saber tamanho certo tenis",
+                    "source_queries": ["como saber tamanho certo tenis", "tenis forma grande"],
+                    "search_intent": "informational",
+                    "audience_question": "Como evitar comprar tenis no tamanho errado?",
+                    "angle": "duvida pratica do publico",
+                    "content_type": "guia",
+                    "seasonality": "evergreen",
+                    "recommended_publish_month": "evergreen",
+                    "opportunity_reason": "Consulta de duvida com intencao pre-compra.",
+                    "content_gap": "Nao ha conteudo salvo sobre tamanho de tenis.",
+                    "priority": 76,
+                    "sections": ["Como medir o pe", "Como comparar formas", "Quando trocar o tamanho"],
+                    "faq": ["Tenis laceia com o uso?"],
+                }
+            ],
+        }
+
+    monkeypatch.setattr("modules.ai_layer.call_json", fake_call_json)
+    monkeypatch.setattr(blog_ideas, "_load_existing_content", lambda limit=80: [
+        {"title": "Ideia antiga sobre looks de inverno", "url": "/looks-inverno"}
+    ])
+    monkeypatch.setattr(blog_ideas, "save_ideas", lambda ideas: None)
+
+    result = blog_ideas.run({
+        "top_queries": [
+            {"query": "como saber tamanho certo tenis", "impressions": 1200, "clicks": 20, "position": 7.5},
+            {"query": "looks inverno masculino", "impressions": 800, "clicks": 8, "position": 11.0},
+        ]
+    }, top=5, use_ai=True, provider="gemini", api_key="fake-key")
+
+    assert result
+    assert result[0]["h1"] == "Como escolher o tamanho certo de tenis online"
+    assert result[0]["provider"] == "query_suggester+gemini"
+    assert result[0]["queries"] == ["como saber tamanho certo tenis", "tenis forma grande"]
+    assert captured["payload"]["existing_content"][0]["title"] == "Ideia antiga sobre looks de inverno"
+    assert "duvida" in captured["payload"]["queries"][0]["intent_tags"]
+
+
 def test_blog_ideas_save_creates_runtime_directory(monkeypatch, tmp_path):
     ideas_file = tmp_path / "runtime" / "content" / "site-key" / "blog_ideas.json"
     monkeypatch.setattr(blog_ideas, "IDEAS_FILE", ideas_file)

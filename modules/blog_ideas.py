@@ -2,13 +2,35 @@ import json
 import re
 import time
 from collections import defaultdict
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
-from config import get_brand_aliases, get_business_context, get_product_terms, get_scoped_runtime_file, get_site_name, get_site_url
+from config import (get_brand_aliases, get_business_context, get_product_terms,
+                    get_scoped_runtime_file, get_site_id, get_site_name, get_site_url)
 
 IDEAS_FILE = get_scoped_runtime_file("blog_ideas.json", "content")
 AI_BATCH_SIZE = 3
+
+QUESTION_TERMS = {
+    "como", "qual", "quais", "quando", "onde", "porque", "por que",
+    "vale", "diferenca", "diferença", "tamanho", "medida", "original",
+    "combinar", "usar", "lavar", "cuidar",
+}
+
+SEASONALITY_BY_MONTH = {
+    1: ["verao", "ferias", "volta as aulas", "ano novo"],
+    2: ["carnaval", "verao", "volta as aulas"],
+    3: ["outono", "meia-estacao"],
+    4: ["outono", "dia das maes"],
+    5: ["dia das maes", "frio chegando", "namorados"],
+    6: ["dia dos namorados", "inverno", "festa junina"],
+    7: ["inverno", "ferias", "liquidacao"],
+    8: ["dia dos pais", "inverno", "meia-estacao"],
+    9: ["primavera", "meia-estacao"],
+    10: ["dia das criancas", "primavera", "pre-black friday"],
+    11: ["black friday", "cyber monday", "presentes"],
+    12: ["natal", "reveillon", "presentes", "verao"],
+}
 
 def _brand_keywords() -> set[str]:
     values = set()
@@ -91,6 +113,52 @@ Formato:
     }}
   ]
 }}"""
+
+
+def _strategic_blog_ideas_system() -> str:
+    return f"""Voce e um estrategista senior de SEO editorial para e-commerce.
+
+Contexto:
+- Site: {get_site_name()} ({get_site_url() or "site configurado pelo cliente"}).
+- Negocio: {get_business_context()}.
+- Objetivo: estudar consultas reais do Google Search Console e propor pautas de blog com potencial organico e comercial.
+
+Como decidir as pautas:
+- Nao escolha apenas as queries com mais impressoes. Agrupe consultas em temas, intencoes e duvidas do publico.
+- Considere: duvidas frequentes, sazonalidade, queda/baixa CTR, posicao media, oportunidades comerciais e lacunas de conteudo.
+- Use conteudos existentes para evitar duplicar pauta; se o tema ja existir, proponha um angulo complementar.
+- Dê preferencia a pautas que possam criar ponte para categorias/produtos, mas tambem aceite temas educativos com boa intencao.
+- Nao invente volume, preco, estoque, promocao ou dados externos.
+- Use PT-BR natural.
+
+Formato obrigatorio:
+{{
+  "ideas": [
+    {{
+      "h1": "...",
+      "meta_title": "...",
+      "meta_description": "...",
+      "primary_query": "...",
+      "source_queries": ["...", "..."],
+      "search_intent": "informational | commercial investigation | transactional support | seasonal",
+      "audience_question": "...",
+      "angle": "...",
+      "content_type": "guia | comparativo | checklist | faq | tendencia | sazonal | evergreen",
+      "seasonality": "evergreen ou janela sazonal",
+      "recommended_publish_month": "YYYY-MM ou evergreen",
+      "opportunity_reason": "...",
+      "content_gap": "...",
+      "priority": 0,
+      "sections": ["...", "..."],
+      "faq": ["...", "..."],
+      "entities": ["...", "..."],
+      "internal_links": [{{"anchor": "...", "url": "...", "reason": "..."}}],
+      "recommended_products_or_categories": ["...", "..."]
+    }}
+  ]
+}}
+
+Retorne APENAS JSON valido, sem markdown e sem texto fora do JSON."""
 
 MODIFIERS = {
     "melhor",
@@ -177,6 +245,123 @@ TITLE_ANGLES = [
 
 def _tokens(query: str) -> list[str]:
     return re.sub(r"[^a-zA-ZÀ-ÿ0-9\s-]", " ", query.lower()).replace("-", " ").split()
+
+
+def _query_sources(gsc_data: dict) -> list[dict]:
+    sources = (
+        gsc_data.get("top_queries", [])
+        + gsc_data.get("content_opps", [])
+        + gsc_data.get("quick_wins", [])
+        + gsc_data.get("pos_opps", [])
+        + gsc_data.get("ctr_opps", [])
+    )
+    seen = set()
+    rows = []
+    for row in sources:
+        query = str(row.get("query", "")).strip()
+        if not query:
+            continue
+        key = query.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(row)
+    return rows
+
+
+def _query_intent_tags(query: str) -> list[str]:
+    tokens = _tokens(query)
+    tags = []
+    if set(tokens) & QUESTION_TERMS:
+        tags.append("duvida")
+    if any(token in tokens for token in ("melhor", "melhores", "comparar", "versus", "vs")):
+        tags.append("comparacao")
+    if any(token in tokens for token in ("comprar", "preco", "preço", "desconto", "cupom", "outlet")):
+        tags.append("comercial")
+    if any(token in tokens for token in ("inverno", "verao", "verão", "natal", "black", "presente", "namorados")):
+        tags.append("sazonal")
+    return tags or ["exploracao"]
+
+
+def _compact_queries(gsc_data: dict, limit: int = 160) -> list[dict]:
+    rows = sorted(
+        _query_sources(gsc_data),
+        key=lambda row: (
+            int(row.get("impressions", 0) or 0),
+            int(row.get("clicks", 0) or 0),
+        ),
+        reverse=True,
+    )
+    compact = []
+    for row in rows[:limit]:
+        query = str(row.get("query", "")).strip()
+        compact.append({
+            "query": query,
+            "impressions": int(row.get("impressions", 0) or 0),
+            "clicks": int(row.get("clicks", 0) or 0),
+            "ctr": row.get("ctr", 0),
+            "position": row.get("position", 0),
+            "intent_tags": _query_intent_tags(query),
+        })
+    return compact
+
+
+def _seasonality_context(today: date | None = None) -> dict:
+    today = today or date.today()
+    months = []
+    for offset in range(4):
+        month = ((today.month - 1 + offset) % 12) + 1
+        year = today.year + ((today.month - 1 + offset) // 12)
+        months.append({
+            "month": f"{year:04d}-{month:02d}",
+            "themes": SEASONALITY_BY_MONTH.get(month, []),
+        })
+    return {"today": today.isoformat(), "next_months": months}
+
+
+def _load_existing_content(limit: int = 80) -> list[dict]:
+    items = []
+    try:
+        site_id = get_site_id()
+        if site_id:
+            from modules import supabase_store
+            rows = (
+                supabase_store._client()
+                .table("content_changes")
+                .select("url, provider, status, meta_title, h1, raw, created_at")
+                .eq("site_id", site_id)
+                .order("created_at", desc=True)
+                .limit(limit)
+                .execute().data
+                or []
+            )
+            for row in rows:
+                raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
+                title = row.get("h1") or row.get("meta_title") or raw.get("h1") or raw.get("title")
+                if title:
+                    items.append({
+                        "title": title,
+                        "url": row.get("url") or raw.get("url"),
+                        "status": row.get("status"),
+                        "provider": row.get("provider"),
+                    })
+            return items[:limit]
+    except Exception:
+        pass
+
+    try:
+        if IDEAS_FILE.exists():
+            existing = json.loads(IDEAS_FILE.read_text(encoding="utf-8"))
+            for item in existing[:limit]:
+                items.append({
+                    "title": item.get("h1") or item.get("meta_title"),
+                    "url": item.get("url"),
+                    "status": item.get("status"),
+                    "provider": item.get("provider"),
+                })
+    except Exception:
+        pass
+    return [item for item in items if item.get("title")]
 
 
 def _detect_brand(tokens: list[str]) -> str:
@@ -366,6 +551,126 @@ def suggest_from_gsc(gsc_data: dict, min_impressions: int = 50) -> list[dict]:
         ideas.append(brief)
 
     return sorted(ideas, key=lambda item: item["opportunity_score"], reverse=True)
+
+
+def _query_metrics(source_queries: list[str], query_index: dict[str, dict]) -> dict:
+    impressions = 0
+    clicks = 0
+    positions = []
+    for query in source_queries:
+        row = query_index.get(str(query).casefold())
+        if not row:
+            continue
+        impressions += int(row.get("impressions", 0) or 0)
+        clicks += int(row.get("clicks", 0) or 0)
+        try:
+            pos = float(row.get("position", 0) or 0)
+            if pos:
+                positions.append(pos)
+        except Exception:
+            pass
+    avg_position = round(sum(positions) / len(positions), 1) if positions else 0
+    return {"impressions": impressions, "clicks": clicks, "avg_position": avg_position}
+
+
+def _normalize_ai_ideas(ai_data: dict, query_rows: list[dict], top: int) -> list[dict]:
+    query_index = {str(row.get("query", "")).casefold(): row for row in query_rows}
+    ideas = []
+    used_slugs = set()
+    for item in ai_data.get("ideas", []) or []:
+        if not isinstance(item, dict):
+            continue
+        h1 = str(item.get("h1") or item.get("title") or "").strip()
+        primary = str(item.get("primary_query") or "").strip()
+        source_queries = [
+            str(query).strip()
+            for query in (item.get("source_queries") or item.get("queries") or ([primary] if primary else []))
+            if str(query).strip()
+        ]
+        if not h1:
+            continue
+        slug = _slug(item.get("url_slug") or h1)
+        if not slug or slug in used_slugs:
+            continue
+        used_slugs.add(slug)
+        metrics = _query_metrics(source_queries, query_index)
+        priority = item.get("priority", item.get("opportunity_score", 0))
+        try:
+            priority = float(priority)
+        except Exception:
+            priority = 0
+        if not priority:
+            priority = min(100, 30 + metrics["impressions"] / 250 + max(0, 12 - metrics["avg_position"]))
+        ideas.append({
+            "url_slug": slug,
+            "url": f"/{slug}",
+            "meta_title": str(item.get("meta_title") or h1)[:60],
+            "meta_description": str(item.get("meta_description") or item.get("opportunity_reason") or "")[:160],
+            "h1": h1,
+            "primary_query": primary or (source_queries[0] if source_queries else h1.lower()),
+            "queries": source_queries[:10],
+            "sections": list(item.get("sections") or [])[:6],
+            "faq": list(item.get("faq") or [])[:5],
+            "internal_links": list(item.get("internal_links") or [])[:4],
+            "entities": list(item.get("entities") or [])[:10],
+            "recommended_products_or_categories": list(item.get("recommended_products_or_categories") or [])[:6],
+            "status": "idea",
+            "provider": f"query_suggester+{ai_data.get('_ai_provider', 'ai')}",
+            "ai_enhanced": True,
+            "search_intent": item.get("search_intent"),
+            "audience_question": item.get("audience_question"),
+            "angle": item.get("angle"),
+            "content_type": item.get("content_type"),
+            "seasonality": item.get("seasonality"),
+            "recommended_publish_month": item.get("recommended_publish_month"),
+            "opportunity_reason": item.get("opportunity_reason"),
+            "content_gap": item.get("content_gap"),
+            "opportunity_score": round(min(100, max(0, priority)), 1),
+            "impressions": metrics["impressions"],
+            "clicks": metrics["clicks"],
+            "avg_position": metrics["avg_position"],
+            "_ai_provider": ai_data.get("_ai_provider"),
+            "_ai_generated_at": ai_data.get("_ai_generated_at"),
+            "generated_at": datetime.now().isoformat(),
+        })
+        if len(ideas) >= top:
+            break
+    return ideas
+
+
+def generate_strategic_ideas_with_ai(
+    gsc_data: dict,
+    top: int = 20,
+    provider: str | None = None,
+    api_key: str | None = None,
+) -> list[dict]:
+    from modules.ai_layer import call_json
+
+    query_rows = _compact_queries(gsc_data, limit=180)
+    if not query_rows:
+        return []
+    payload = {
+        "requested_ideas": top,
+        "queries": query_rows,
+        "seasonality": _seasonality_context(),
+        "existing_content": _load_existing_content(limit=80),
+        "configured_brands": sorted(_brand_keywords())[:80],
+        "configured_product_terms": sorted(get_product_terms())[:80],
+        "instructions": (
+            "Estude as consultas como um conjunto. Crie clusters e ideias editoriais que cubram duvidas, "
+            "sazonalidade e lacunas, evitando repetir conteudos existentes."
+        ),
+    }
+    ai_data = call_json(
+        prompt=json.dumps(payload, ensure_ascii=False, indent=2),
+        system_prompt=_strategic_blog_ideas_system(),
+        provider=provider,
+        api_key=api_key,
+        fallback={},
+    )
+    if not ai_data.get("_ai_enhanced"):
+        return []
+    return _normalize_ai_ideas(ai_data, query_rows, top)
 
 
 def enhance_idea_with_ai(
@@ -624,8 +929,16 @@ def run(
     provider: str | None = None,
     api_key: str | None = None,
 ) -> list[dict]:
-    ideas = suggest_from_gsc(gsc_data)[:top]
-    if use_ai and ideas:
+    ideas = generate_strategic_ideas_with_ai(
+        gsc_data or {},
+        top=top,
+        provider=provider,
+        api_key=api_key,
+    ) if use_ai else []
+    strategic_ai_used = bool(ideas)
+    if not ideas:
+        ideas = suggest_from_gsc(gsc_data)[:top]
+    if use_ai and ideas and not strategic_ai_used:
         # Single batch call — much faster than one call per idea
         ideas = _enhance_ideas_chunk(ideas, provider=provider, api_key=api_key)
     save_ideas(ideas)
