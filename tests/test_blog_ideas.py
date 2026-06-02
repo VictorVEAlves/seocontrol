@@ -114,3 +114,19 @@ def test_blog_ideas_save_creates_runtime_directory(monkeypatch, tmp_path):
 
     assert ideas_file.exists()
     assert "melhores-tenis-lacoste" in ideas_file.read_text(encoding="utf-8")
+
+
+def test_blog_ideas_save_does_not_fail_on_read_only_runtime(monkeypatch):
+    class BadParent:
+        def mkdir(self, **_kwargs):
+            raise OSError("read-only file system")
+
+    class BadPath:
+        parent = BadParent()
+
+        def exists(self):
+            return False
+
+    monkeypatch.setattr(blog_ideas, "IDEAS_FILE", BadPath())
+
+    blog_ideas.save_ideas([{"url_slug": "ideia"}])

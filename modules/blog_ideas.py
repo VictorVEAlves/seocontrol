@@ -596,21 +596,25 @@ def _enhance_ideas_chunk(
 
 
 def save_ideas(ideas: list[dict]) -> None:
-    IDEAS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    existing = []
-    if IDEAS_FILE.exists():
-        try:
-            existing = json.loads(IDEAS_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            existing = []
-    by_slug = {item.get("url_slug"): idx for idx, item in enumerate(existing)}
-    for idea in ideas:
-        idx = by_slug.get(idea.get("url_slug"))
-        if idx is None:
-            existing.append(idea)
-        else:
-            existing[idx] = idea
-    IDEAS_FILE.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        IDEAS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        existing = []
+        if IDEAS_FILE.exists():
+            try:
+                existing = json.loads(IDEAS_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                existing = []
+        by_slug = {item.get("url_slug"): idx for idx, item in enumerate(existing)}
+        for idea in ideas:
+            idx = by_slug.get(idea.get("url_slug"))
+            if idx is None:
+                existing.append(idea)
+            else:
+                existing[idx] = idea
+        IDEAS_FILE.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        # Cache local/legado. Em producao multiusuario, a fonte persistente e o Supabase.
+        return
 
 
 def run(
