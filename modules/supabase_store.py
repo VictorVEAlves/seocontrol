@@ -152,6 +152,46 @@ def _url_type(path: str) -> str:
     return "category"
 
 
+def _find_owned_site_id(sb: Client, owner_user_id: str, base_url: str) -> str:
+    if not owner_user_id or not base_url:
+        return ""
+    rows = (
+        sb.table("sites")
+        .select("id")
+        .eq("owner_user_id", owner_user_id)
+        .eq("base_url", base_url)
+        .limit(1)
+        .execute().data
+        or []
+    )
+    return str(rows[0].get("id") or "") if rows else ""
+
+
+def _repoint_user_site_settings(sb: Client, owner_user_id: str, old_site_id: str, new_site_id: str) -> None:
+    if not owner_user_id or not old_site_id or not new_site_id or old_site_id == new_site_id:
+        return
+    try:
+        (
+            sb.table("user_site_settings")
+            .update({"site_id": new_site_id})
+            .eq("user_id", owner_user_id)
+            .eq("site_id", old_site_id)
+            .execute()
+        )
+    except Exception:
+        # If a row already exists for the isolated site, keep it and remove the stale pointer.
+        try:
+            (
+                sb.table("user_site_settings")
+                .delete()
+                .eq("user_id", owner_user_id)
+                .eq("site_id", old_site_id)
+                .execute()
+            )
+        except Exception:
+            pass
+
+
 def _upsert_site(sb: Client, name: str, base_url: str) -> str:
     configured_site_id = get_site_id()
     payload = {"name": name, "base_url": base_url, "updated_at": _now()}
@@ -164,11 +204,29 @@ def _upsert_site(sb: Client, name: str, base_url: str) -> str:
             if current:
                 current_owner = str(current[0].get("owner_user_id") or "")
                 if owner_user_id and current_owner and current_owner != owner_user_id:
+                    owned_site_id = _find_owned_site_id(sb, owner_user_id, base_url)
+                    if owned_site_id:
+                        _repoint_user_site_settings(sb, owner_user_id, configured_site_id, owned_site_id)
+                        return owned_site_id
                     raise RuntimeError("Site ativo pertence a outro usuario.")
-                sb.table("sites").update(payload).eq("id", configured_site_id).execute()
-                return configured_site_id
+                try:
+                    sb.table("sites").update(payload).eq("id", configured_site_id).execute()
+                    return configured_site_id
+                except Exception:
+                    owned_site_id = _find_owned_site_id(sb, owner_user_id, base_url)
+                    if owned_site_id:
+                        _repoint_user_site_settings(sb, owner_user_id, configured_site_id, owned_site_id)
+                        return owned_site_id
+                    raise
             insert_payload = {"id": configured_site_id, **payload}
-            sb.table("sites").insert(insert_payload).execute()
+            try:
+                sb.table("sites").insert(insert_payload).execute()
+            except Exception:
+                owned_site_id = _find_owned_site_id(sb, owner_user_id, base_url)
+                if owned_site_id:
+                    _repoint_user_site_settings(sb, owner_user_id, configured_site_id, owned_site_id)
+                    return owned_site_id
+                raise
             return configured_site_id
         except Exception as exc:
             raise RuntimeError(

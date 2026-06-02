@@ -180,6 +180,26 @@ def test_blog_ideas_falls_back_to_query_clusters_when_ai_fails(monkeypatch):
     assert "Como saber tamanho certo tenis" in result[0]["h1"]
 
 
+def test_blog_ideas_fallback_ignores_broad_navigation_queries(monkeypatch):
+    monkeypatch.setattr("modules.blog_ideas.get_product_terms", lambda: {"tenis", "camisa"})
+    monkeypatch.setattr(blog_ideas, "save_ideas", lambda ideas: None)
+
+    result = blog_ideas.suggest_strategic_from_gsc({
+        "top_queries": [
+            {"query": "reserva", "impressions": 40000, "clicks": 1000, "position": 1.0},
+            {"query": "lacoste", "impressions": 15000, "clicks": 600, "position": 1.0},
+            {"query": "tenis reserva masculino", "impressions": 6000, "clicks": 100, "position": 5.0},
+            {"query": "como saber tamanho certo tenis", "impressions": 1200, "clicks": 20, "position": 7.5},
+        ]
+    }, top=5)
+
+    assert result
+    titles = [item["h1"].lower() for item in result]
+    assert not any(title.startswith("reserva:") for title in titles)
+    assert not any(title.startswith("lacoste:") for title in titles)
+    assert any("tenis" in title for title in titles)
+
+
 def test_blog_ideas_save_creates_runtime_directory(monkeypatch, tmp_path):
     ideas_file = tmp_path / "runtime" / "content" / "site-key" / "blog_ideas.json"
     monkeypatch.setattr(blog_ideas, "IDEAS_FILE", ideas_file)

@@ -38,7 +38,7 @@ TOPIC_STOPWORDS = {
     "aos", "ou", "que", "qual", "quais", "como", "quando", "onde", "porque",
     "por", "que", "melhor", "melhores", "comprar", "preco", "preço", "valor",
     "desconto", "promocao", "promoção", "barato", "barata", "original", "loja",
-    "online", "site", "brasil",
+    "online", "site", "brasil", "outlet",
 }
 
 def _brand_keywords() -> set[str]:
@@ -292,12 +292,66 @@ def _query_intent_tags(query: str) -> list[str]:
     return tags or ["exploracao"]
 
 
+def _has_product_signal(tokens: list[str]) -> bool:
+    configured = get_product_terms()
+    for token in tokens:
+        if token in configured:
+            return True
+        singular = token.rstrip("s")
+        if singular in configured or PLURAL_NORMALIZATION.get(singular):
+            return True
+    return False
+
+
+def _is_editorial_query(query: str) -> bool:
+    tokens = _tokens(query)
+    if not tokens:
+        return False
+    tags = set(_query_intent_tags(query))
+    has_product = _has_product_signal(tokens)
+    has_strong_intent = bool(tags & {"duvida", "comparacao", "sazonal"})
+    has_modifier = _has_blog_intent(tokens)
+    meaningful = [token for token in tokens if token not in TOPIC_STOPWORDS]
+
+    if len(tokens) <= 1 and not has_strong_intent:
+        return False
+    if has_product or has_strong_intent or has_modifier:
+        return True
+    return len(meaningful) >= 3
+
+
+def _query_blog_score(row: dict) -> float:
+    query = str(row.get("query", "")).strip()
+    tokens = _tokens(query)
+    tags = set(_query_intent_tags(query))
+    impressions = int(row.get("impressions", 0) or 0)
+    clicks = int(row.get("clicks", 0) or 0)
+    score = impressions + clicks * 20
+    if _has_product_signal(tokens):
+        score += 25000
+    if "duvida" in tags:
+        score += 35000
+    if "comparacao" in tags:
+        score += 25000
+    if "sazonal" in tags:
+        score += 18000
+    if "comercial" in tags:
+        score += 8000
+    if len(tokens) >= 3:
+        score += 8000
+    if len(tokens) >= 4:
+        score += 5000
+    if not _is_editorial_query(query):
+        score -= 100000
+    return score
+
+
 def _compact_queries(gsc_data: dict, limit: int = 160) -> list[dict]:
     rows = sorted(
         _query_sources(gsc_data),
         key=lambda row: (
+            _query_blog_score(row),
             int(row.get("impressions", 0) or 0),
-            int(row.get("clicks", 0) or 0),
         ),
         reverse=True,
     )
@@ -681,10 +735,6 @@ def _topic_terms(query: str) -> list[str]:
             continue
         if token not in terms:
             terms.append(token)
-    if not terms:
-        for token in _tokens(query):
-            if len(token) >= 3 and token not in terms:
-                terms.append(token)
     return terms[:5]
 
 
@@ -692,7 +742,7 @@ def _cluster_queries_for_blog(query_rows: list[dict]) -> list[dict]:
     grouped = {}
     for row in query_rows:
         query = str(row.get("query", "")).strip()
-        if not query:
+        if not query or not _is_editorial_query(query):
             continue
         terms = _topic_terms(query)
         if not terms:
@@ -723,6 +773,14 @@ def _cluster_queries_for_blog(query_rows: list[dict]) -> list[dict]:
 def _topic_label(terms: list[str]) -> str:
     topic = " ".join(terms[:4]).strip() or "tema pesquisado"
     return topic[:1].upper() + topic[1:]
+
+
+def _display_topic(primary_query: str, fallback_terms: list[str]) -> str:
+    tokens = [token for token in _tokens(primary_query) if token not in TOPIC_STOPWORDS]
+    if 2 <= len(tokens) <= 5:
+        topic = " ".join(tokens)
+        return topic[:1].upper() + topic[1:]
+    return _topic_label(fallback_terms)
 
 
 def _fallback_title(topic: str, primary_query: str, tags: set[str]) -> str:
@@ -781,7 +839,7 @@ def suggest_strategic_from_gsc(gsc_data: dict, top: int = 20, ai_error: str | No
     for group in _cluster_queries_for_blog(query_rows):
         queries = sorted(group["queries"], key=lambda row: int(row.get("impressions", 0) or 0), reverse=True)
         primary_query = str(queries[0].get("query", "")).strip()
-        topic = _topic_label(group["terms"])
+        topic = _display_topic(primary_query, group["terms"])
         tags = set(group["tags"])
         avg_position = round(sum(group["positions"]) / len(group["positions"]), 1) if group["positions"] else 0
         title = _fallback_title(topic, primary_query, tags)

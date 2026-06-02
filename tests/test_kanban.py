@@ -105,3 +105,65 @@ def test_recent_done_recommendation_blocks_duplicate_but_old_done_does_not():
         "status": "done",
         "evidence": {"_kanban": {"moved_at": (now - timedelta(days=45)).isoformat()}},
     }, now=now)
+
+
+class _SiteIsolationQuery:
+    def __init__(self, db, table, action=None, payload=None):
+        self.db = db
+        self.table = table
+        self.action = action
+        self.payload = payload
+        self.filters = {}
+        self.data = []
+
+    def select(self, *args, **kwargs):
+        self.action = "select"
+        return self
+
+    def update(self, payload):
+        self.action = "update"
+        self.payload = payload
+        return self
+
+    def eq(self, key, value):
+        self.filters[key] = value
+        return self
+
+    def limit(self, *args, **kwargs):
+        return self
+
+    def execute(self):
+        if self.table == "sites" and self.action == "select":
+            if self.filters.get("id") == "legacy-site":
+                self.data = [{"id": "legacy-site", "owner_user_id": None}]
+            elif (
+                self.filters.get("owner_user_id") == "user-1"
+                and self.filters.get("base_url") == "https://example.com"
+            ):
+                self.data = [{"id": "owned-site"}]
+        elif self.table == "sites" and self.action == "update":
+            raise RuntimeError("duplicate key value violates unique constraint")
+        elif self.table == "user_site_settings" and self.action == "update":
+            self.db.repointed = dict(self.filters, **self.payload)
+            self.data = [{"site_id": self.payload["site_id"]}]
+        return self
+
+
+class _SiteIsolationSupabase:
+    def __init__(self):
+        self.repointed = {}
+
+    def table(self, name):
+        return _SiteIsolationQuery(self, name)
+
+
+def test_upsert_site_uses_owned_site_when_legacy_site_conflicts(monkeypatch):
+    db = _SiteIsolationSupabase()
+    monkeypatch.setattr(supabase_store, "get_site_id", lambda: "legacy-site")
+    monkeypatch.setattr(supabase_store, "get_site_owner_user_id", lambda: "user-1")
+
+    site_id = supabase_store._upsert_site(db, "Example", "https://example.com")
+
+    assert site_id == "owned-site"
+    assert db.repointed["user_id"] == "user-1"
+    assert db.repointed["site_id"] == "owned-site"

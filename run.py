@@ -479,13 +479,16 @@ def run_blog_ideas(
     if not ideas:
         print("   !  nenhuma ideia encontrada nas consultas analisadas")
         return []
+    shown_ai_errors = set()
     for idx, idea in enumerate(ideas[:top], start=1):
         provider_name = str(idea.get("provider", ""))
         mode = "IA" if idea.get("ai_enhanced") else ("fallback" if provider_name.endswith("+fallback") else "base")
         print(f"   {idx:02d}. [{mode}] {idea['h1']} | {idea.get('impressions', 0):,} impressoes")
         print(f"       query: {idea.get('primary_query', '')}")
-        if idea.get("_ai_error"):
-            print(f"       IA indisponivel: {idea.get('_ai_error')}")
+        ai_error = idea.get("_ai_error")
+        if ai_error and ai_error not in shown_ai_errors:
+            shown_ai_errors.add(ai_error)
+            print(f"       IA indisponivel: {ai_error}")
     print("   ok ideias geradas para o site atual")
     return ideas
 
