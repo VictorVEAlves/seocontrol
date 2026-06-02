@@ -155,6 +155,31 @@ def test_blog_ideas_ai_strategic_studies_queries_without_brand_product(monkeypat
     assert "duvida" in captured["payload"]["queries"][0]["intent_tags"]
 
 
+def test_blog_ideas_falls_back_to_query_clusters_when_ai_fails(monkeypatch):
+    def fake_call_json(**_kwargs):
+        return {
+            "_ai_enhanced": False,
+            "_ai_error": "JSON truncado pelo provider",
+            "_ai_provider": "gemini",
+        }
+
+    monkeypatch.setattr("modules.ai_layer.call_json", fake_call_json)
+    monkeypatch.setattr(blog_ideas, "save_ideas", lambda ideas: None)
+
+    result = blog_ideas.run({
+        "top_queries": [
+            {"query": "como saber tamanho certo tenis", "impressions": 1200, "clicks": 20, "position": 7.5},
+            {"query": "tenis forma grande", "impressions": 700, "clicks": 8, "position": 9.0},
+        ]
+    }, top=3, use_ai=True, provider="gemini", api_key="fake-key")
+
+    assert result
+    assert result[0]["provider"] == "query_suggester+fallback"
+    assert result[0]["primary_query"] == "como saber tamanho certo tenis"
+    assert result[0]["_ai_error"] == "JSON truncado pelo provider"
+    assert "Como saber tamanho certo tenis" in result[0]["h1"]
+
+
 def test_blog_ideas_save_creates_runtime_directory(monkeypatch, tmp_path):
     ideas_file = tmp_path / "runtime" / "content" / "site-key" / "blog_ideas.json"
     monkeypatch.setattr(blog_ideas, "IDEAS_FILE", ideas_file)

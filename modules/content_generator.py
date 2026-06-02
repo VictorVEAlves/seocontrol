@@ -38,6 +38,14 @@ from config import (
 
 PENDING_FILE = get_scoped_runtime_file("pending_changes.json", "publishing")
 SYSTEM_PROMPT_OVERRIDE: str | None = None
+DEFAULT_MAX_OUTPUT_TOKENS = 4000
+
+
+def _max_output_tokens() -> int:
+    try:
+        return max(1200, int(os.environ.get("AI_MAX_OUTPUT_TOKENS", DEFAULT_MAX_OUTPUT_TOKENS)))
+    except Exception:
+        return DEFAULT_MAX_OUTPUT_TOKENS
 
 # ── System prompt (igual para todos os provedores) ────────────────────────────
 
@@ -81,7 +89,7 @@ def _call_gemini(prompt: str, api_key: str) -> str:
     models = ["gemini-2.0-flash", "gemini-1.5-flash-8b", "gemini-2.0-flash-lite"]
     body = {
         "contents": [{"parts": [{"text": _system_prompt() + "\n\n" + prompt}]}],
-        "generationConfig": {"temperature": 0.4, "maxOutputTokens": 1500},
+        "generationConfig": {"temperature": 0.4, "maxOutputTokens": _max_output_tokens()},
     }
     last_error = None
     for model in models:
@@ -116,7 +124,7 @@ def _call_groq(prompt: str, api_key: str) -> str:
             {"role": "user",   "content": prompt},
         ],
         "temperature": 0.4,
-        "max_tokens": 1500,
+        "max_tokens": _max_output_tokens(),
     }
     r = requests.post(url, json=body, headers=headers, timeout=30)
     r.raise_for_status()
@@ -142,7 +150,7 @@ def _call_openrouter(prompt: str, api_key: str) -> str:
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.35,
-        "max_tokens": 1600,
+        "max_tokens": _max_output_tokens(),
     }
 
     def request_once(model: str, use_json_mode: bool) -> str:
@@ -203,7 +211,7 @@ def _call_mistral(prompt: str, api_key: str) -> str:
             {"role": "user",   "content": prompt},
         ],
         "temperature": 0.4,
-        "max_tokens": 1500,
+        "max_tokens": _max_output_tokens(),
     }
     r = requests.post(url, json=body, headers=headers, timeout=30)
     r.raise_for_status()
@@ -218,7 +226,7 @@ def _call_anthropic(prompt: str, api_key: str) -> str:
     client = anthropic.Anthropic(api_key=api_key)
     msg = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=1500,
+        max_tokens=_max_output_tokens(),
         system=_system_prompt(),
         messages=[{"role": "user", "content": prompt}],
     )

@@ -480,7 +480,8 @@ def run_blog_ideas(
         print("   !  nenhuma ideia encontrada nas consultas analisadas")
         return []
     for idx, idea in enumerate(ideas[:top], start=1):
-        mode = "IA" if idea.get("ai_enhanced") else "base"
+        provider_name = str(idea.get("provider", ""))
+        mode = "IA" if idea.get("ai_enhanced") else ("fallback" if provider_name.endswith("+fallback") else "base")
         print(f"   {idx:02d}. [{mode}] {idea['h1']} | {idea.get('impressions', 0):,} impressoes")
         print(f"       query: {idea.get('primary_query', '')}")
         if idea.get("_ai_error"):

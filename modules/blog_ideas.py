@@ -32,6 +32,15 @@ SEASONALITY_BY_MONTH = {
     12: ["natal", "reveillon", "presentes", "verao"],
 }
 
+TOPIC_STOPWORDS = {
+    "a", "as", "o", "os", "de", "da", "das", "do", "dos", "e", "em", "no", "na",
+    "nos", "nas", "para", "por", "com", "sem", "um", "uma", "uns", "umas", "ao",
+    "aos", "ou", "que", "qual", "quais", "como", "quando", "onde", "porque",
+    "por", "que", "melhor", "melhores", "comprar", "preco", "preço", "valor",
+    "desconto", "promocao", "promoção", "barato", "barata", "original", "loja",
+    "online", "site", "brasil",
+}
+
 def _brand_keywords() -> set[str]:
     values = set()
     for brand, aliases in get_brand_aliases().items():
@@ -638,17 +647,197 @@ def _normalize_ai_ideas(ai_data: dict, query_rows: list[dict], top: int) -> list
     return ideas
 
 
+def _idea_sort_key(item: dict) -> tuple:
+    return (
+        float(item.get("opportunity_score", 0) or 0),
+        int(item.get("impressions", 0) or 0),
+        int(item.get("clicks", 0) or 0),
+    )
+
+
+def _dedupe_ideas(ideas: list[dict], limit: int) -> list[dict]:
+    deduped = []
+    seen = set()
+    for idea in sorted(ideas, key=_idea_sort_key, reverse=True):
+        slug = idea.get("url_slug") or _slug(idea.get("h1", ""))
+        primary = str(idea.get("primary_query", "")).casefold()
+        key = slug or primary
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(idea)
+        if len(deduped) >= limit:
+            break
+    return deduped
+
+
+def _topic_terms(query: str) -> list[str]:
+    brand_terms = set()
+    for brand in _brand_keywords():
+        brand_terms.update(_tokens(brand))
+    terms = []
+    for token in _tokens(query):
+        if len(token) < 3 or token in TOPIC_STOPWORDS or token in brand_terms:
+            continue
+        if token not in terms:
+            terms.append(token)
+    if not terms:
+        for token in _tokens(query):
+            if len(token) >= 3 and token not in terms:
+                terms.append(token)
+    return terms[:5]
+
+
+def _cluster_queries_for_blog(query_rows: list[dict]) -> list[dict]:
+    grouped = {}
+    for row in query_rows:
+        query = str(row.get("query", "")).strip()
+        if not query:
+            continue
+        terms = _topic_terms(query)
+        if not terms:
+            continue
+        tags = row.get("intent_tags") or _query_intent_tags(query)
+        key = ":".join([tags[0], *terms[:3]])
+        group = grouped.setdefault(key, {
+            "terms": terms,
+            "tags": set(),
+            "queries": [],
+            "impressions": 0,
+            "clicks": 0,
+            "positions": [],
+        })
+        group["tags"].update(tags)
+        group["queries"].append(row)
+        group["impressions"] += int(row.get("impressions", 0) or 0)
+        group["clicks"] += int(row.get("clicks", 0) or 0)
+        try:
+            pos = float(row.get("position", 0) or 0)
+            if pos:
+                group["positions"].append(pos)
+        except Exception:
+            pass
+    return sorted(grouped.values(), key=lambda item: (item["impressions"], item["clicks"]), reverse=True)
+
+
+def _topic_label(terms: list[str]) -> str:
+    topic = " ".join(terms[:4]).strip() or "tema pesquisado"
+    return topic[:1].upper() + topic[1:]
+
+
+def _fallback_title(topic: str, primary_query: str, tags: set[str]) -> str:
+    query = primary_query.strip()
+    if "duvida" in tags and query:
+        lowered = query.lower()
+        if lowered.startswith(("como ", "qual ", "quais ", "quando ", "onde ")):
+            return f"{query[:1].upper() + query[1:]}: guia pratico"
+        return f"Como escolher {topic.lower()} sem erro"
+    if "comparacao" in tags:
+        return f"{topic}: comparativo para escolher melhor"
+    if "sazonal" in tags:
+        return f"{topic}: guia sazonal para comprar melhor"
+    if "comercial" in tags:
+        return f"{topic}: o que avaliar antes de comprar"
+    return f"{topic}: guia completo para escolher melhor"
+
+
+def _fallback_sections(topic: str, tags: set[str]) -> list[str]:
+    sections = [
+        f"O que o publico quer saber sobre {topic.lower()}",
+        f"Como escolher {topic.lower()} com mais seguranca",
+        "Principais criterios antes da compra",
+        "Erros comuns e como evitar",
+        "Perguntas frequentes dos usuarios",
+    ]
+    if "sazonal" in tags:
+        sections.insert(1, "Quando publicar e como aproveitar a sazonalidade")
+    if "comparacao" in tags:
+        sections.insert(1, "Comparativo entre opcoes e criterios de decisao")
+    return sections[:6]
+
+
+def _fallback_faq(topic: str, queries: list[dict]) -> list[str]:
+    faq = []
+    for row in queries:
+        query = str(row.get("query", "")).strip()
+        tokens = _tokens(query)
+        if set(tokens) & QUESTION_TERMS:
+            question = query.rstrip("?")
+            faq.append(question[:1].upper() + question[1:] + "?")
+        if len(faq) >= 3:
+            break
+    if faq:
+        return faq
+    return [
+        f"Como escolher {topic.lower()}?",
+        f"O que comparar antes de comprar {topic.lower()}?",
+        f"Quando vale investir em {topic.lower()}?",
+    ]
+
+
+def suggest_strategic_from_gsc(gsc_data: dict, top: int = 20, ai_error: str | None = None) -> list[dict]:
+    query_rows = _compact_queries(gsc_data, limit=220)
+    ideas = []
+    for group in _cluster_queries_for_blog(query_rows):
+        queries = sorted(group["queries"], key=lambda row: int(row.get("impressions", 0) or 0), reverse=True)
+        primary_query = str(queries[0].get("query", "")).strip()
+        topic = _topic_label(group["terms"])
+        tags = set(group["tags"])
+        avg_position = round(sum(group["positions"]) / len(group["positions"]), 1) if group["positions"] else 0
+        title = _fallback_title(topic, primary_query, tags)
+        slug = _slug(title)
+        score = min(100, 28 + group["impressions"] / 300 + max(0, 12 - avg_position) + len(queries) * 1.5)
+        idea = {
+            "url_slug": slug,
+            "url": f"/{slug}",
+            "meta_title": title[:60],
+            "meta_description": (
+                f"Guia para responder as principais duvidas sobre {topic.lower()} e ajudar o usuario a decidir melhor antes da compra."
+            )[:160],
+            "h1": title,
+            "primary_query": primary_query,
+            "queries": [str(row.get("query", "")).strip() for row in queries[:10] if row.get("query")],
+            "sections": _fallback_sections(topic, tags),
+            "faq": _fallback_faq(topic, queries),
+            "internal_links": [],
+            "entities": group["terms"][:10],
+            "recommended_products_or_categories": group["terms"][:6],
+            "status": "idea",
+            "provider": "query_suggester+fallback",
+            "ai_enhanced": False,
+            "search_intent": ", ".join(sorted(tags)),
+            "audience_question": primary_query if "duvida" in tags else "",
+            "angle": "pauta criada por cluster de consultas do GSC",
+            "content_type": "guia",
+            "seasonality": "sazonal" if "sazonal" in tags else "evergreen",
+            "recommended_publish_month": "evergreen",
+            "opportunity_reason": "Cluster de consultas reais do GSC com potencial editorial.",
+            "content_gap": "Validar se ja existe conteudo equivalente antes de publicar.",
+            "opportunity_score": round(max(0, score), 1),
+            "impressions": group["impressions"],
+            "clicks": group["clicks"],
+            "avg_position": avg_position,
+            "generated_at": datetime.now().isoformat(),
+        }
+        if ai_error:
+            idea["_ai_error"] = ai_error
+        ideas.append(idea)
+        if len(ideas) >= top * 2:
+            break
+    return _dedupe_ideas(ideas, top)
+
+
 def generate_strategic_ideas_with_ai(
     gsc_data: dict,
     top: int = 20,
     provider: str | None = None,
     api_key: str | None = None,
-) -> list[dict]:
+) -> tuple[list[dict], str | None]:
     from modules.ai_layer import call_json
 
     query_rows = _compact_queries(gsc_data, limit=180)
     if not query_rows:
-        return []
+        return [], "Nenhuma query disponivel para a IA analisar."
     payload = {
         "requested_ideas": top,
         "queries": query_rows,
@@ -669,8 +858,11 @@ def generate_strategic_ideas_with_ai(
         fallback={},
     )
     if not ai_data.get("_ai_enhanced"):
-        return []
-    return _normalize_ai_ideas(ai_data, query_rows, top)
+        return [], ai_data.get("_ai_error") or "IA nao retornou uma resposta valida."
+    ideas = _normalize_ai_ideas(ai_data, query_rows, top)
+    if not ideas:
+        return [], "IA respondeu, mas nao retornou ideias validas no JSON."
+    return ideas, None
 
 
 def enhance_idea_with_ai(
@@ -929,15 +1121,22 @@ def run(
     provider: str | None = None,
     api_key: str | None = None,
 ) -> list[dict]:
-    ideas = generate_strategic_ideas_with_ai(
-        gsc_data or {},
-        top=top,
-        provider=provider,
-        api_key=api_key,
-    ) if use_ai else []
+    ai_error = None
+    if use_ai:
+        ideas, ai_error = generate_strategic_ideas_with_ai(
+            gsc_data or {},
+            top=top,
+            provider=provider,
+            api_key=api_key,
+        )
+    else:
+        ideas = []
     strategic_ai_used = bool(ideas)
     if not ideas:
-        ideas = suggest_from_gsc(gsc_data)[:top]
+        ideas = _dedupe_ideas([
+            *suggest_from_gsc(gsc_data),
+            *suggest_strategic_from_gsc(gsc_data, top=top, ai_error=ai_error),
+        ], top)
     if use_ai and ideas and not strategic_ai_used:
         # Single batch call — much faster than one call per idea
         ideas = _enhance_ideas_chunk(ideas, provider=provider, api_key=api_key)
