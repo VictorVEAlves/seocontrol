@@ -140,6 +140,9 @@ Como decidir as pautas:
 - Considere: duvidas frequentes, sazonalidade, queda/baixa CTR, posicao media, oportunidades comerciais e lacunas de conteudo.
 - Use conteudos existentes para evitar duplicar pauta; se o tema ja existir, proponha um angulo complementar.
 - Dê preferencia a pautas que possam criar ponte para categorias/produtos, mas tambem aceite temas educativos com boa intencao.
+- Retorne exatamente a quantidade pedida em requested_ideas quando houver queries suficientes.
+- primary_query e source_queries devem ser escolhidas somente entre as queries recebidas no campo q.
+- Evite H1 generico como "Guia de Compras", "Dicas para escolher" ou "Melhores marcas" quando der para citar produto, marca ou duvida.
 - Nao invente volume, preco, estoque, promocao ou dados externos.
 - Use PT-BR natural.
 
@@ -755,6 +758,31 @@ def _dedupe_ideas(ideas: list[dict], limit: int) -> list[dict]:
     return deduped
 
 
+def _idea_keys(idea: dict) -> set[str]:
+    values = {
+        str(idea.get("url_slug") or _slug(idea.get("h1", ""))).casefold(),
+        str(idea.get("primary_query", "")).casefold(),
+    }
+    values.update(str(query).casefold() for query in idea.get("queries", []) if query)
+    return {value for value in values if value}
+
+
+def _fill_missing_ideas(base: list[dict], additions: list[dict], limit: int) -> list[dict]:
+    result = list(base[:limit])
+    seen = set()
+    for idea in result:
+        seen.update(_idea_keys(idea))
+    for idea in sorted(additions, key=_idea_sort_key, reverse=True):
+        keys = _idea_keys(idea)
+        if keys & seen:
+            continue
+        result.append(idea)
+        seen.update(keys)
+        if len(result) >= limit:
+            break
+    return result
+
+
 def _topic_terms(query: str) -> list[str]:
     brand_terms = set()
     for brand in _brand_keywords():
@@ -1325,6 +1353,15 @@ def run(
             *suggest_from_gsc(gsc_data),
             *suggest_strategic_from_gsc(gsc_data, top=top, ai_error=ai_error),
         ], top)
+    elif len(ideas) < top:
+        ideas = _fill_missing_ideas(
+            ideas,
+            [
+                *suggest_from_gsc(gsc_data),
+                *suggest_strategic_from_gsc(gsc_data, top=top),
+            ],
+            top,
+        )
     if use_ai and ideas and not strategic_ai_used:
         # Single batch call — much faster than one call per idea
         ideas = _enhance_ideas_chunk(ideas, provider=provider, api_key=api_key)

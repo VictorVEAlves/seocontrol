@@ -190,6 +190,40 @@ def test_blog_ideas_ai_prompt_uses_limited_compact_queries(monkeypatch):
     assert set(captured["payload"]["queries"][0].keys()) == {"q", "imp", "clk", "pos", "tags"}
 
 
+def test_blog_ideas_ai_partial_response_is_completed_with_fallback(monkeypatch):
+    def fake_call_json(**_kwargs):
+        return {
+            "_ai_enhanced": True,
+            "_ai_provider": "gemini",
+            "ideas": [
+                {
+                    "h1": "Camisa Lacoste original: sinais antes de comprar",
+                    "meta_title": "Camisa Lacoste original: sinais antes de comprar",
+                    "meta_description": "Veja sinais de autenticidade antes de comprar camisa Lacoste online.",
+                    "primary_query": "camisa lacoste original",
+                    "source_queries": ["camisa lacoste original"],
+                    "priority": 80,
+                }
+            ],
+        }
+
+    monkeypatch.setattr("modules.ai_layer.call_json", fake_call_json)
+    monkeypatch.setattr(blog_ideas, "save_ideas", lambda ideas: None)
+    monkeypatch.setattr("modules.blog_ideas.get_product_terms", lambda: {"camisa", "jaqueta", "tenis"})
+
+    result = blog_ideas.run({
+        "top_queries": [
+            {"query": "camisa lacoste original", "impressions": 900, "clicks": 20, "position": 7},
+            {"query": "jaqueta columbia masculina", "impressions": 800, "clicks": 15, "position": 8},
+            {"query": "tenis reserva masculino", "impressions": 700, "clicks": 12, "position": 9},
+        ]
+    }, top=3, use_ai=True, provider="gemini", api_key="fake-key")
+
+    assert len(result) == 3
+    assert result[0]["provider"] == "query_suggester+gemini"
+    assert any(item["provider"] == "query_suggester+fallback" for item in result[1:])
+
+
 def test_blog_ideas_falls_back_to_query_clusters_when_ai_fails(monkeypatch):
     def fake_call_json(**_kwargs):
         return {
