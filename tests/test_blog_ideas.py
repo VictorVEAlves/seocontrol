@@ -177,7 +177,7 @@ def test_blog_ideas_falls_back_to_query_clusters_when_ai_fails(monkeypatch):
     assert result[0]["provider"] == "query_suggester+fallback"
     assert result[0]["primary_query"] == "como saber tamanho certo tenis"
     assert result[0]["_ai_error"] == "JSON truncado pelo provider"
-    assert "Como saber tamanho certo tenis" in result[0]["h1"]
+    assert "como acertar tamanho e forma" in result[0]["h1"]
 
 
 def test_blog_ideas_fallback_ignores_broad_navigation_queries(monkeypatch):
@@ -198,6 +198,24 @@ def test_blog_ideas_fallback_ignores_broad_navigation_queries(monkeypatch):
     assert not any(title.startswith("reserva:") for title in titles)
     assert not any(title.startswith("lacoste:") for title in titles)
     assert any("tenis" in title for title in titles)
+    assert not any("guia completo para escolher melhor" in title for title in titles)
+
+
+def test_blog_ideas_fallback_varies_title_angles(monkeypatch):
+    monkeypatch.setattr("modules.blog_ideas.get_product_terms", lambda: {"jaqueta", "camisa", "bone"})
+
+    result = blog_ideas.suggest_strategic_from_gsc({
+        "top_queries": [
+            {"query": "jaqueta columbia masculina", "impressions": 3500, "clicks": 50, "position": 6.0},
+            {"query": "camisa lacoste original", "impressions": 900, "clicks": 20, "position": 7.5},
+            {"query": "boné da lacoste", "impressions": 800, "clicks": 10, "position": 9.0},
+        ]
+    }, top=5)
+
+    titles = [item["h1"] for item in result]
+    assert any("guia para frio" in title.lower() for title in titles)
+    assert any("original: detalhes para conferir" in title.lower() for title in titles)
+    assert any("como escolher sem erro" in title.lower() for title in titles)
 
 
 def test_blog_ideas_save_creates_runtime_directory(monkeypatch, tmp_path):

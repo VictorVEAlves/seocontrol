@@ -783,30 +783,116 @@ def _display_topic(primary_query: str, fallback_terms: list[str]) -> str:
     return _topic_label(fallback_terms)
 
 
+def _fallback_angle(primary_query: str, tags: set[str]) -> str:
+    tokens = set(_tokens(primary_query))
+    if tokens & {"original", "originais", "falso", "falsa", "autentico", "autentica"}:
+        return "autenticidade"
+    if tokens & {"masculino", "feminino", "infantil"}:
+        return "publico"
+    if tokens & {"inverno", "frio", "neve", "trilha", "impermeavel", "columbia"}:
+        return "uso_clima"
+    if tokens & {"tamanho", "forma", "medida", "numero", "numeração"}:
+        return "tamanho"
+    if "comparacao" in tags or tokens & {"melhor", "melhores", "comparar", "versus", "vs"}:
+        return "comparativo"
+    if tokens & {"outlet", "desconto", "promocao", "promoção", "barato", "preco", "preço"}:
+        return "compra_segura"
+    if tokens & {"camisa", "camiseta", "bone", "boné", "jaqueta", "moletom", "tenis", "tênis"}:
+        return "produto"
+    if "sazonal" in tags:
+        return "sazonal"
+    return "guia"
+
+
 def _fallback_title(topic: str, primary_query: str, tags: set[str]) -> str:
     query = primary_query.strip()
+    angle = _fallback_angle(primary_query, tags)
+    if angle in {"autenticidade", "uso_clima", "tamanho"}:
+        templates = {
+            "autenticidade": f"{topic} original: detalhes para conferir",
+            "uso_clima": f"{topic}: guia para frio, uso e conforto",
+            "tamanho": f"{topic}: como acertar tamanho e forma",
+        }
+        return templates[angle]
     if "duvida" in tags and query:
         lowered = query.lower()
         if lowered.startswith(("como ", "qual ", "quais ", "quando ", "onde ")):
             return f"{query[:1].upper() + query[1:]}: guia pratico"
         return f"Como escolher {topic.lower()} sem erro"
-    if "comparacao" in tags:
-        return f"{topic}: comparativo para escolher melhor"
-    if "sazonal" in tags:
-        return f"{topic}: guia sazonal para comprar melhor"
-    if "comercial" in tags:
-        return f"{topic}: o que avaliar antes de comprar"
-    return f"{topic}: guia completo para escolher melhor"
+    templates = {
+        "autenticidade": f"{topic} original: detalhes para conferir",
+        "publico": f"{topic}: como escolher o modelo ideal",
+        "uso_clima": f"{topic}: guia para frio, uso e conforto",
+        "tamanho": f"{topic}: como acertar tamanho e forma",
+        "comparativo": f"{topic}: comparativo para escolher melhor",
+        "compra_segura": f"{topic}: o que avaliar antes de comprar",
+        "produto": f"{topic}: como escolher sem erro",
+        "sazonal": f"{topic}: guia sazonal para comprar melhor",
+        "guia": f"{topic}: guia pratico antes de comprar",
+    }
+    return templates[angle]
 
 
-def _fallback_sections(topic: str, tags: set[str]) -> list[str]:
-    sections = [
+def _fallback_meta_description(topic: str, angle: str) -> str:
+    descriptions = {
+        "autenticidade": f"Veja sinais de autenticidade, acabamento e detalhes para avaliar {topic.lower()} antes de comprar com mais seguranca.",
+        "publico": f"Entenda como escolher {topic.lower()} considerando caimento, uso, estilo e criterios importantes antes da compra.",
+        "uso_clima": f"Compare materiais, conforto e usos ideais de {topic.lower()} para frio, rotina ou ocasioes especificas.",
+        "tamanho": f"Aprenda a avaliar tamanho, forma e medidas de {topic.lower()} para reduzir erro na compra online.",
+        "comparativo": f"Compare modelos, criterios de escolha e custo-beneficio de {topic.lower()} antes de decidir.",
+        "compra_segura": f"Saiba o que conferir em {topic.lower()} para comprar melhor, avaliar oferta e evitar escolhas ruins.",
+        "produto": f"Veja como escolher {topic.lower()} com base em qualidade, acabamento, uso e sinais importantes do produto.",
+        "sazonal": f"Entenda quando publicar e como aproveitar buscas sazonais sobre {topic.lower()} com conteudo util.",
+        "guia": f"Guia direto para responder as principais duvidas sobre {topic.lower()} e ajudar o usuario a decidir melhor.",
+    }
+    return descriptions.get(angle, descriptions["guia"])[:160]
+
+
+def _fallback_sections(topic: str, tags: set[str], angle: str) -> list[str]:
+    by_angle = {
+        "autenticidade": [
+            f"Como identificar {topic.lower()} original",
+            "Detalhes de acabamento, etiqueta e costura",
+            "Diferenças comuns entre original e réplica",
+            "O que conferir antes de finalizar a compra",
+            "Perguntas frequentes sobre autenticidade",
+        ],
+        "uso_clima": [
+            f"Quando {topic.lower()} faz mais sentido",
+            "Materiais, forro e proteção térmica",
+            "Uso na cidade, viagem ou rotina",
+            "Como comparar conforto e durabilidade",
+            "Cuidados para conservar melhor",
+        ],
+        "tamanho": [
+            f"Como escolher o tamanho de {topic.lower()}",
+            "Forma, caimento e medidas que importam",
+            "Como comparar com peças que você já usa",
+            "Erros comuns na compra online",
+            "FAQ sobre tamanho e troca",
+        ],
+        "comparativo": [
+            f"Principais modelos de {topic.lower()}",
+            "Critérios de comparação antes da compra",
+            "Custo-benefício e ocasião de uso",
+            "Quando vale pagar mais",
+            "Tabela rápida de decisão",
+        ],
+        "compra_segura": [
+            f"O que avaliar em {topic.lower()} antes de comprar",
+            "Preço, desconto e sinais de boa oferta",
+            "Como conferir qualidade e procedência",
+            "Erros que reduzem o custo-benefício",
+            "Checklist final de compra",
+        ],
+    }
+    sections = by_angle.get(angle, [
         f"O que o publico quer saber sobre {topic.lower()}",
         f"Como escolher {topic.lower()} com mais seguranca",
         "Principais criterios antes da compra",
         "Erros comuns e como evitar",
         "Perguntas frequentes dos usuarios",
-    ]
+    ])
     if "sazonal" in tags:
         sections.insert(1, "Quando publicar e como aproveitar a sazonalidade")
     if "comparacao" in tags:
@@ -814,7 +900,7 @@ def _fallback_sections(topic: str, tags: set[str]) -> list[str]:
     return sections[:6]
 
 
-def _fallback_faq(topic: str, queries: list[dict]) -> list[str]:
+def _fallback_faq(topic: str, queries: list[dict], angle: str) -> list[str]:
     faq = []
     for row in queries:
         query = str(row.get("query", "")).strip()
@@ -826,6 +912,18 @@ def _fallback_faq(topic: str, queries: list[dict]) -> list[str]:
             break
     if faq:
         return faq
+    if angle == "autenticidade":
+        return [
+            f"Como saber se {topic.lower()} é original?",
+            f"Quais detalhes conferir em {topic.lower()}?",
+            f"Vale comprar {topic.lower()} online?",
+        ]
+    if angle == "tamanho":
+        return [
+            f"Como escolher o tamanho de {topic.lower()}?",
+            f"{topic} tem forma grande ou pequena?",
+            "O que fazer se o tamanho ficar errado?",
+        ]
     return [
         f"Como escolher {topic.lower()}?",
         f"O que comparar antes de comprar {topic.lower()}?",
@@ -842,6 +940,7 @@ def suggest_strategic_from_gsc(gsc_data: dict, top: int = 20, ai_error: str | No
         topic = _display_topic(primary_query, group["terms"])
         tags = set(group["tags"])
         avg_position = round(sum(group["positions"]) / len(group["positions"]), 1) if group["positions"] else 0
+        angle = _fallback_angle(primary_query, tags)
         title = _fallback_title(topic, primary_query, tags)
         slug = _slug(title)
         score = min(100, 28 + group["impressions"] / 300 + max(0, 12 - avg_position) + len(queries) * 1.5)
@@ -849,14 +948,12 @@ def suggest_strategic_from_gsc(gsc_data: dict, top: int = 20, ai_error: str | No
             "url_slug": slug,
             "url": f"/{slug}",
             "meta_title": title[:60],
-            "meta_description": (
-                f"Guia para responder as principais duvidas sobre {topic.lower()} e ajudar o usuario a decidir melhor antes da compra."
-            )[:160],
+            "meta_description": _fallback_meta_description(topic, angle),
             "h1": title,
             "primary_query": primary_query,
             "queries": [str(row.get("query", "")).strip() for row in queries[:10] if row.get("query")],
-            "sections": _fallback_sections(topic, tags),
-            "faq": _fallback_faq(topic, queries),
+            "sections": _fallback_sections(topic, tags, angle),
+            "faq": _fallback_faq(topic, queries, angle),
             "internal_links": [],
             "entities": group["terms"][:10],
             "recommended_products_or_categories": group["terms"][:6],
@@ -865,7 +962,7 @@ def suggest_strategic_from_gsc(gsc_data: dict, top: int = 20, ai_error: str | No
             "ai_enhanced": False,
             "search_intent": ", ".join(sorted(tags)),
             "audience_question": primary_query if "duvida" in tags else "",
-            "angle": "pauta criada por cluster de consultas do GSC",
+            "angle": angle,
             "content_type": "guia",
             "seasonality": "sazonal" if "sazonal" in tags else "evergreen",
             "recommended_publish_month": "evergreen",
