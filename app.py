@@ -3718,7 +3718,10 @@ def shopify_page():
   <div id="shopify-tab-queue" class="shopify-tab-panel">
     <div class="panel-head">
       <h2 class="panel-title">Sugestões para revisar</h2>
-      <span class="muted"><span id="shopify-selected-count">0</span> selecionada(s)</span>
+      <div class="shopify-queue-actions">
+        <span class="muted"><span id="shopify-selected-count">0</span> selecionada(s)</span>
+        <button class="btn btn-ghost btn-sm shopify-danger-action" id="shopify-delete-selected-btn" type="button" onclick="deleteSelectedShopify()" disabled>Apagar selecionadas</button>
+      </div>
     </div>
     <div class="table-wrap">
       <table>
@@ -3730,6 +3733,7 @@ def shopify_page():
             <th>Title SEO sugerido</th>
             <th>Meta description sugerida</th>
             <th>Descrição Shopify sugerida</th>
+            <th style="width:96px">A&ccedil;&otilde;es</th>
           </tr>
         </thead>
         <tbody id="shopify-queue-body"></tbody>
@@ -3855,6 +3859,11 @@ def shopify_page():
 .publish-stats span,.publish-note span{{font-size:11px;color:var(--muted);font-weight:700}}
 .publish-actions{{display:grid;gap:10px}}
 .publish-actions .btn{{justify-content:center}}
+.shopify-queue-actions{{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end}}
+.shopify-danger-action{{color:#991b1b;border-color:#fecaca;background:#fff}}
+.shopify-danger-action:hover{{background:#fef2f2;color:#991b1b;text-decoration:none}}
+.shopify-danger-action:disabled{{opacity:.45;cursor:not-allowed}}
+.shopify-row-actions{{display:flex;gap:6px;align-items:center;justify-content:flex-start}}
 .technical-output{{min-height:180px;max-height:360px;overflow:auto}}
 @media(max-width:1180px){{.shopify-overview{{grid-template-columns:1fr 1fr}}.shopify-operation-grid{{grid-template-columns:1fr}}#shopify-action-form{{grid-template-columns:1fr 1fr}}}}
 @media(max-width:980px){{.audit-card{{grid-template-columns:1fr}}.audit-summary-grid,.workflow-timeline,.publish-stats{{grid-template-columns:repeat(2,1fr)}}.publish-grid{{grid-template-columns:1fr}}}}
@@ -3949,6 +3958,8 @@ function updateSelectionBadges() {{
     const el = document.getElementById(id);
     if (el) el.textContent = count;
   }});
+  const deleteBtn = document.getElementById('shopify-delete-selected-btn');
+  if (deleteBtn) deleteBtn.disabled = count === 0;
 }}
 function protectShopifyCredentialFields() {{
   const fields = [
@@ -3994,12 +4005,16 @@ function renderQueue(data) {{
     const el = document.getElementById(id);
     if (el) el.textContent = pubMap[id];
   }});
-  document.getElementById('queue-file').textContent = SHOPIFY_QUEUE.queue_file || '';
-  updateSelectionBadges();
   const body = document.getElementById('shopify-queue-body');
   const rows = SHOPIFY_QUEUE.rows || [];
+  const validKeys = new Set(rows.map(r => r.key));
+  selectedShopify = new Set(Array.from(selectedShopify).filter(key => validKeys.has(key)));
+  const selectAll = document.getElementById('select-all-shopify');
+  if (selectAll) selectAll.checked = rows.length > 0 && rows.every(r => selectedShopify.has(r.key));
+  document.getElementById('queue-file').textContent = SHOPIFY_QUEUE.queue_file || '';
+  updateSelectionBadges();
   if (!rows.length) {{
-    body.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:22px">Fila vazia.</td></tr>';
+    body.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:22px">Fila vazia.</td></tr>';
     return;
   }}
   body.innerHTML = rows.map(function(r) {{
@@ -4015,6 +4030,7 @@ function renderQueue(data) {{
       <td><div class="shopify-diff"><strong>${{h(r.proposal_title || '(vazio)')}}</strong><span>${{h(r.current_title || '(atual vazio)')}}</span></div></td>
       <td><div class="shopify-diff">${{h(desc)}}</div></td>
       <td><div class="shopify-diff">${{contentBadge}}<span>${{h(content) || '(sem sugestão)'}}</span><div class="muted" style="font-size:11px;margin-top:5px">Atual: ${{h(r.current_content_words || 0)}} palavras</div></div></td>
+      <td><div class="shopify-row-actions"><button class="btn btn-ghost btn-sm shopify-danger-action" type="button" data-key="${{h(r.key)}}" onclick="deleteShopifyRow(this)">Apagar</button></div></td>
     </tr>`;
   }}).join('');
 }}
@@ -4187,6 +4203,39 @@ async function pollShopifyJob(jobId) {{
 async function loadQueue() {{
   const res = await fetch('/shopify/queue');
   renderQueue(await res.json());
+}}
+async function deleteShopifySuggestions(keys) {{
+  const selected = (keys || []).filter(Boolean);
+  if (!selected.length) {{
+    showToast('Selecione ao menos uma sugestao para apagar', 'error');
+    return;
+  }}
+  setWorkflowState({{phase:'review', status:'running', percent:45, message:'Apagando sugestoes selecionadas...', label:`${{selected.length}} item(ns)`}});
+  try {{
+    const data = await postJSON('/shopify/queue/delete', {{keys:selected}});
+    selected.forEach(key => selectedShopify.delete(key));
+    renderQueue(data.queue);
+    setWorkflowState({{phase:'review', status:'completed', percent:100, message:`${{data.deleted || 0}} sugestao(oes) apagada(s).`, label:'Fila atualizada'}});
+    showToast('Sugestao apagada', 'success');
+  }} catch (err) {{
+    setWorkflowState({{phase:'review', status:'error', percent:100, message:err.message, label:'Falha ao apagar'}});
+    showToast(err.message, 'error');
+  }}
+}}
+async function deleteSelectedShopify() {{
+  const keys = Array.from(selectedShopify);
+  if (!keys.length) {{
+    showToast('Selecione ao menos uma sugestao para apagar', 'error');
+    return;
+  }}
+  if (!confirm(`Apagar ${{keys.length}} sugestao(oes) da fila?`)) return;
+  await deleteShopifySuggestions(keys);
+}}
+async function deleteShopifyRow(button) {{
+  const key = button && button.dataset ? button.dataset.key : '';
+  if (!key) return;
+  if (!confirm('Apagar esta sugestao da fila?')) return;
+  await deleteShopifySuggestions([key]);
 }}
 function toggleShopifyRow(input) {{
   if (input.checked) selectedShopify.add(input.dataset.key);
@@ -4477,6 +4526,25 @@ def shopify_job_status(job_id):
 @app.get("/shopify/queue")
 def shopify_queue_api():
     return jsonify(_shopify_queue_payload(limit=120))
+
+
+@app.post("/shopify/queue/delete")
+def shopify_queue_delete_api():
+    try:
+        data = request.get_json(silent=True) or {}
+        keys = {str(key).strip() for key in data.get("keys") or [] if str(key).strip()}
+        raw_paths = data.get("paths") or ""
+        paths = [str(path).strip() for path in raw_paths if str(path).strip()] if isinstance(raw_paths, list) else _split_urls(raw_paths)
+        if not keys and not paths:
+            return jsonify({"ok": False, "error": "Selecione ao menos uma sugestao para apagar."}), 400
+        shopify_seo = _shopify_mod()
+        deleted, _changes = shopify_seo.delete_queue_items(
+            keys=keys or None,
+            urls_filter=paths or None,
+        )
+        return jsonify({"ok": True, "deleted": deleted, "queue": _shopify_queue_payload(limit=120)})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
 
 
 @app.post("/shopify/approve")

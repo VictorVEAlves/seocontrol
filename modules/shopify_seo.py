@@ -1011,6 +1011,27 @@ def approve_queue(
     return count, changes
 
 
+def delete_queue_items(
+    keys: Iterable[str] | None = None,
+    urls_filter: Iterable[str] | None = None,
+    path: Path = QUEUE_FILE,
+) -> tuple[int, list[dict]]:
+    selected_keys = {str(key).strip() for key in keys or [] if str(key).strip()}
+    changes = load_queue(path)
+    kept: list[dict] = []
+    deleted = 0
+    for item in changes:
+        matches_key = bool(selected_keys and _change_key(item) in selected_keys)
+        matches_url = bool(not selected_keys and urls_filter is not None and _matches_urls(item, urls_filter))
+        if matches_key or matches_url:
+            deleted += 1
+            continue
+        kept.append(item)
+    if deleted:
+        save_queue(kept, path)
+    return deleted, kept if deleted else changes
+
+
 def _selected_approved_changes(changes: list[dict], urls_filter: Iterable[str] | None) -> list[dict]:
     return [
         item

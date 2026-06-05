@@ -23,6 +23,8 @@ def test_shopify_page_renders_frontend(monkeypatch):
     assert "setShopifyTab" in html
     assert '<option value="groq" selected>' in html
     assert "async function runShopifyAudit" in html
+    assert "/shopify/queue/delete" in html
+    assert "deleteSelectedShopify" in html
     assert "shopify-settings-form" not in html
     assert "shopify-kpis" not in html
     assert "split(String.fromCharCode(10))" in html
@@ -73,6 +75,45 @@ def test_shopify_queue_endpoint_returns_payload(monkeypatch):
     assert data["rows"][0]["path"] == "/products/produto"
     assert data["rows"][0]["resource_label"] == "Produto"
     assert data["rows"][0]["status_label"] == "Em revisão"
+
+
+def test_shopify_queue_delete_endpoint_removes_selected_keys(monkeypatch):
+    monkeypatch.setenv("AUTH_REQUIRED", "0")
+    import modules.shopify_seo as shopify_seo
+
+    calls = {}
+
+    def fake_delete_queue_items(keys=None, urls_filter=None):
+        calls["keys"] = set(keys or [])
+        calls["urls_filter"] = urls_filter
+        return 1, []
+
+    monkeypatch.setattr(shopify_seo, "delete_queue_items", fake_delete_queue_items)
+    monkeypatch.setattr(
+        dashboard,
+        "_shopify_queue_payload",
+        lambda limit=120: {"counts": {"pending_review": 0}, "total": 0, "rows": [], "queue_file": "queue.json"},
+    )
+
+    response = dashboard.app.test_client().post(
+        "/shopify/queue/delete",
+        json={"keys": ["product:gid://shopify/Product/1"]},
+    )
+    data = response.get_json()
+
+    assert response.status_code == 200
+    assert data["deleted"] == 1
+    assert calls["keys"] == {"product:gid://shopify/Product/1"}
+    assert calls["urls_filter"] is None
+
+
+def test_shopify_queue_delete_requires_selection(monkeypatch):
+    monkeypatch.setenv("AUTH_REQUIRED", "0")
+
+    response = dashboard.app.test_client().post("/shopify/queue/delete", json={"keys": []})
+
+    assert response.status_code == 400
+    assert "Selecione" in response.get_json()["error"]
 
 
 def test_shopify_audit_uses_url_targeted_fetch(monkeypatch):

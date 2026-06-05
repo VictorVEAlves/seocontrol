@@ -196,6 +196,37 @@ def test_approve_queue_requires_selection(tmp_path):
     assert changes[0]["approved_at"]
 
 
+def test_delete_queue_items_removes_selected_keys(tmp_path):
+    queue = tmp_path / "shopify_seo_changes.json"
+    shopify_seo.save_queue(
+        [
+            {
+                "id": "gid://shopify/Product/1",
+                "resource_type": "product",
+                "path": "/products/polo-lacoste",
+                "status": "pending_review",
+            },
+            {
+                "id": "gid://shopify/Collection/1",
+                "resource_type": "collection",
+                "path": "/collections/lacoste",
+                "status": "pending_review",
+            },
+        ],
+        path=queue,
+    )
+
+    count, changes = shopify_seo.delete_queue_items(
+        keys=["product:gid://shopify/Product/1"],
+        path=queue,
+    )
+
+    persisted = shopify_seo.load_queue(path=queue)
+    assert count == 1
+    assert [item["path"] for item in changes] == ["/collections/lacoste"]
+    assert persisted == changes
+
+
 def test_apply_approved_changes_skips_pending_review_items():
     class FakeClient:
         def __init__(self):
