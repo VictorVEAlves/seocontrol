@@ -25,7 +25,7 @@ from config import (BASE_DIR, GEMINI_API_KEY,
                     disable_broken_local_proxy, get_site_url, get_gsc_property, get_site_name,
                     get_brand_clusters, get_gsc_credentials_file, get_gsc_token_file,
                     get_gsc_token_json, get_site_id, get_site_owner_user_id,
-                    update_runtime_site_config)
+                    get_runtime_dir, update_runtime_site_config)
 
 
 def _nuke_proxies() -> None:
@@ -170,7 +170,7 @@ def _dashboard_cache_file(kind: str, period_days: int) -> Path:
         get_gsc_property() or get_site_url() or "default",
     ])
     site_key = hashlib.sha1(raw_key.encode("utf-8")).hexdigest()
-    folder = BASE_DIR / ".runtime"
+    folder = get_runtime_dir()
     return folder / f"dashboard_{kind}_{site_key}_{period_days}d.json"
 
 

@@ -21,7 +21,8 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from config import (disable_broken_local_proxy, BASE_DIR,
                     get_site_url, get_gsc_property, get_site_name, save_site_config,
                     set_runtime_site_config, clear_runtime_site_config,
-                    get_gsc_credentials_file, get_gsc_token_file, get_gsc_token_json)
+                    get_gsc_credentials_file, get_gsc_token_file, get_gsc_token_json,
+                    get_runtime_dir)
 
 load_dotenv()
 disable_broken_local_proxy()
@@ -191,7 +192,7 @@ def _storage_key(*parts: str) -> str:
 
 def _user_site_gsc_paths(user_id: str, site_id: str) -> dict:
     key = _storage_key(user_id, site_id)
-    folder = BASE_DIR / ".runtime" / "gsc"
+    folder = get_runtime_dir() / "gsc"
     return {
         "gsc_credentials_file": str(folder / f"credentials_{key}.json"),
         "gsc_token_file": str(folder / f"token_{key}.json"),
@@ -5605,12 +5606,12 @@ _AUDIT_JOBS: dict = {}
 _AUDIT_LOCK = threading.Lock()
 
 try:
-    from config import BASE_DIR as _AUDIT_BASE_DIR
-    _LAST_AUDIT_DIR = _AUDIT_BASE_DIR / ".runtime" / "audits"
+    from config import BASE_DIR as _AUDIT_BASE_DIR, get_runtime_dir as _get_runtime_dir
+    _LAST_AUDIT_DIR = _get_runtime_dir() / "audits"
     _LEGACY_LAST_AUDIT_FILE = _AUDIT_BASE_DIR / ".last_full_audit.json"
 except Exception:
     import pathlib as _pl
-    _LAST_AUDIT_DIR = _pl.Path(".runtime") / "audits"
+    _LAST_AUDIT_DIR = (_pl.Path(os.environ.get("TMPDIR")) / "seo-audit-runtime" / "audits") if os.environ.get("TMPDIR") else (_pl.Path(".runtime") / "audits")
     _LEGACY_LAST_AUDIT_FILE = _pl.Path(".last_full_audit.json")
 
 
@@ -7019,7 +7020,7 @@ def settings():
             if _is_authenticated():
                 _clear_dashboard_cache_for_active_site()
             else:
-                for folder, pat in ((BASE_DIR, ".dashboard_cache_*.json"), (BASE_DIR, ".dashboard_ai_*.json"), (BASE_DIR / ".runtime", "dashboard_*_*.json")):
+                for folder, pat in ((BASE_DIR, ".dashboard_cache_*.json"), (BASE_DIR, ".dashboard_ai_*.json"), (get_runtime_dir(), "dashboard_*_*.json")):
                     for f in folder.glob(pat):
                         try: f.unlink()
                         except Exception: pass
@@ -7081,7 +7082,7 @@ def settings():
     current_url      = cfg.get("site_url") or ("" if _is_authenticated() else get_site_url())
     current_prop     = cfg.get("gsc_property") or ("" if _is_authenticated() else get_gsc_property())
     _gsc_cred_file, gsc_token_file = (
-        (BASE_DIR / ".runtime" / "gsc" / "_new_site_credentials.json", BASE_DIR / ".runtime" / "gsc" / "_new_site_token.json")
+        (get_runtime_dir() / "gsc" / "_new_site_credentials.json", get_runtime_dir() / "gsc" / "_new_site_token.json")
         if is_new_site else _active_gsc_files()
     )
     oauth_ready      = _google_oauth_ready()

@@ -145,6 +145,32 @@ _SITE_CONFIG_FILE = BASE_DIR / ".site_config.json"
 _RUNTIME_SITE_CONFIG: ContextVar[dict | None] = ContextVar("runtime_site_config", default=None)
 
 
+def is_serverless_runtime() -> bool:
+    """Return True when the app is running from a read-only serverless bundle."""
+    if os.environ.get("VERCEL") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
+        return True
+    try:
+        return BASE_DIR.as_posix().startswith("/var/task")
+    except Exception:
+        return False
+
+
+def get_runtime_dir() -> Path:
+    """Writable runtime/cache directory.
+
+    Local development keeps using the project .runtime folder. Serverless
+    platforms such as Vercel expose the app bundle as read-only, so runtime
+    files must live under /tmp.
+    """
+    configured = os.environ.get("SEO_RUNTIME_DIR") or os.environ.get("RUNTIME_DIR")
+    if configured:
+        path = Path(configured)
+        return path if path.is_absolute() else BASE_DIR / path
+    if is_serverless_runtime():
+        return Path(os.environ.get("TMPDIR") or "/tmp") / "seo-audit-runtime"
+    return BASE_DIR / ".runtime"
+
+
 def set_runtime_site_config(config: dict | None) -> None:
     """Set the active site configuration for the current request/job context."""
     if config is None:
@@ -237,7 +263,7 @@ def get_gsc_credentials_file() -> Path:
     if _using_runtime_site_config():
         return _resolve_runtime_path(
             cfg.get("gsc_credentials_file"),
-            BASE_DIR / ".runtime" / "gsc" / "unconfigured_credentials.json",
+            get_runtime_dir() / "gsc" / "unconfigured_credentials.json",
         )
     return _resolve_runtime_path(
         cfg.get("gsc_credentials_file") or os.environ.get("GSC_CREDENTIALS_FILE"),
@@ -251,7 +277,7 @@ def get_gsc_token_file() -> Path:
     if _using_runtime_site_config():
         return _resolve_runtime_path(
             cfg.get("gsc_token_file"),
-            BASE_DIR / ".runtime" / "gsc" / "unconfigured_token.json",
+            get_runtime_dir() / "gsc" / "unconfigured_token.json",
         )
     return _resolve_runtime_path(
         cfg.get("gsc_token_file") or os.environ.get("GSC_TOKEN_FILE"),
@@ -302,8 +328,9 @@ def get_scoped_runtime_file(filename: str, folder: str = "scoped") -> Path:
     if user_id or site_id:
         raw_key = "|".join([user_id or "local", site_id or "", str(cfg.get("site_url") or "default")])
         key = hashlib.sha1(raw_key.encode("utf-8")).hexdigest()
-        return BASE_DIR / ".runtime" / folder / key / filename
-    return BASE_DIR / filename
+        return get_runtime_dir() / folder / key / filename
+    base = get_runtime_dir() if is_serverless_runtime() else BASE_DIR
+    return base / filename
 
 
 def save_site_config(**kwargs) -> None:
