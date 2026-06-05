@@ -17,14 +17,15 @@ import json
 import hashlib
 import os
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
 from config import (BASE_DIR, GEMINI_API_KEY,
                     disable_broken_local_proxy, get_site_url, get_gsc_property, get_site_name,
                     get_brand_clusters, get_gsc_credentials_file, get_gsc_token_file,
-                    get_gsc_token_json, get_site_id, get_site_owner_user_id)
+                    get_gsc_token_json, get_site_id, get_site_owner_user_id,
+                    update_runtime_site_config)
 
 
 def _nuke_proxies() -> None:
@@ -76,10 +77,90 @@ def _load_authorized_credentials(token_file: Path):
 
 
 def _persist_authorized_credentials(creds, token_file: Path) -> None:
+    try:
+        token_json = creds.to_json()
+    except Exception:
+        token_json = ""
     if get_gsc_token_json():
+        if token_json:
+            update_runtime_site_config(gsc_token_json=token_json)
         return
     token_file.parent.mkdir(parents=True, exist_ok=True)
-    token_file.write_text(creds.to_json(), encoding="utf-8")
+    token_file.write_text(token_json, encoding="utf-8")
+
+
+def _refresh_credentials_direct(creds, token_file: Path, timeout: int = 10):
+    """Refresh OAuth credentials through Google's token endpoint with a hard timeout."""
+    import requests as _req
+
+    refresh_token = str(getattr(creds, "refresh_token", "") or "")
+    token_uri = str(getattr(creds, "token_uri", "") or "https://oauth2.googleapis.com/token")
+    client_id = (
+        str(getattr(creds, "client_id", "") or "")
+        or os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
+        or os.environ.get("GOOGLE_CLIENT_ID", "")
+        or os.environ.get("GSC_OAUTH_CLIENT_ID", "")
+    ).strip()
+    client_secret = (
+        str(getattr(creds, "client_secret", "") or "")
+        or os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
+        or os.environ.get("GOOGLE_CLIENT_SECRET", "")
+        or os.environ.get("GSC_OAUTH_CLIENT_SECRET", "")
+    ).strip()
+
+    if not refresh_token:
+        raise GSCAuthRequired(
+            "Token do Google sem refresh_token. Reconecte o Google Search Console em Configurações."
+        )
+    if not client_id or not client_secret:
+        raise GSCAuthRequired(
+            "OAuth do Google sem client_id/client_secret. Reconecte o Google Search Console."
+        )
+
+    session = _req.Session()
+    session.trust_env = False
+    try:
+        resp = session.post(
+            token_uri,
+            data={
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "refresh_token": refresh_token,
+                "grant_type": "refresh_token",
+            },
+            timeout=timeout,
+        )
+    except Exception as exc:
+        raise TimeoutError(f"refresh do GSC falhou em até {timeout}s: {exc}") from exc
+
+    try:
+        payload = resp.json()
+    except Exception:
+        payload = {}
+
+    if not resp.ok:
+        detail = payload.get("error_description") or payload.get("error") or resp.text[:200]
+        if resp.status_code in {400, 401}:
+            detail = (
+                f"{detail}. O token salvo foi rejeitado pelo Google; "
+                "desconecte e conecte o Google Search Console novamente."
+            )
+        raise RuntimeError(f"refresh do GSC falhou: {detail}")
+
+    access_token = str(payload.get("access_token") or "")
+    if not access_token:
+        raise RuntimeError("refresh do GSC não retornou access_token.")
+
+    creds.token = access_token
+    if payload.get("refresh_token"):
+        setattr(creds, "_refresh_token", str(payload["refresh_token"]))
+    try:
+        expires_in = int(payload.get("expires_in") or 3600)
+    except Exception:
+        expires_in = 3600
+    creds.expiry = datetime.utcnow() + timedelta(seconds=max(60, expires_in - 60))
+    _persist_authorized_credentials(creds, token_file)
+    return creds
 
 
 def _dashboard_cache_file(kind: str, period_days: int) -> Path:
@@ -123,10 +204,7 @@ class GSCAuthRequired(Exception):
 
 def _get_credentials(silent: bool = False):
     """Load GSC credentials. With silent=True, never opens a browser — raises instead."""
-    from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
-    import google.auth.transport.requests
-    import requests as _req
 
     creds = None
     token_file = _token_file()
@@ -135,11 +213,7 @@ def _get_credentials(silent: bool = False):
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            # Refresh using a proxy-free requests session
-            session = _req.Session()
-            session.trust_env = False
-            auth_req = google.auth.transport.requests.Request(session=session)
-            creds.refresh(auth_req)
+            creds = _refresh_credentials_direct(creds, token_file)
         else:
             if silent:
                 raise GSCAuthRequired(
@@ -176,17 +250,14 @@ def _build_session(silent: bool = False):
 
     # Refresh token if needed using the same proxy-free session
     if not creds.valid:
-        auth_req = google.auth.transport.requests.Request(session=base)
-        creds.refresh(auth_req)
-        token_file = _token_file()
-        _persist_authorized_credentials(creds, token_file)
+        creds = _refresh_credentials_direct(creds, _token_file())
 
     authed = google.auth.transport.requests.AuthorizedSession(creds)
     authed.trust_env = False
     return authed
 
 
-def _get_gsc_bearer(timeout: int = 20) -> str:
+def _get_gsc_bearer_legacy(timeout: int = 20) -> str:
     """
     Get a GSC API bearer token WITHOUT interactive auth, bounded by `timeout`.
     Runs the (potentially blocking) auth in a worker thread so a hung network
@@ -210,6 +281,28 @@ def _get_gsc_bearer(timeout: int = 20) -> str:
         raise TimeoutError(f"autenticação GSC excedeu {timeout}s")
     finally:
         _ex.shutdown(wait=False)
+
+
+def _get_gsc_bearer(timeout: int = 20) -> str:
+    """
+    Get a GSC API bearer token without interactive auth.
+    This path refreshes directly with requests so google-auth cannot hang the dashboard.
+    """
+    token_file = _token_file()
+    creds = _load_authorized_credentials(token_file)
+    if not creds:
+        raise GSCAuthRequired(
+            "GSC não autenticado. Acesse Configurações → Google Search Console → Conectar com Google."
+        )
+    if creds.valid and creds.token:
+        return creds.token
+    if creds.refresh_token:
+        creds = _refresh_credentials_direct(creds, token_file, timeout=max(3, min(timeout, 10)))
+        if creds.token:
+            return creds.token
+    raise GSCAuthRequired(
+        "Token do Google expirado e sem refresh_token. Reconecte o Google Search Console em Configurações."
+    )
 
 
 # ── API calls ─────────────────────────────────────────────────────────────────

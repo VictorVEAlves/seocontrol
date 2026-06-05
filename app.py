@@ -21,7 +21,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from config import (disable_broken_local_proxy, BASE_DIR,
                     get_site_url, get_gsc_property, get_site_name, save_site_config,
                     set_runtime_site_config, clear_runtime_site_config,
-                    get_gsc_credentials_file, get_gsc_token_file)
+                    get_gsc_credentials_file, get_gsc_token_file, get_gsc_token_json)
 
 load_dotenv()
 disable_broken_local_proxy()
@@ -1748,12 +1748,25 @@ def _clear_dashboard_cache_for_active_site(periods: tuple[int, ...] = (7, 28, 90
         pass
 
 
+def _persist_dashboard_refreshed_gsc_token(initial_token_json: str = "") -> None:
+    """Persist a token refreshed during a dashboard request back to the active user/site."""
+    if not _is_authenticated():
+        return
+    try:
+        refreshed = str(get_gsc_token_json() or "")
+        if refreshed and refreshed != str(initial_token_json or ""):
+            _update_active_user_site_config(gsc_token_json=refreshed)
+    except Exception:
+        pass
+
+
 @app.route("/dashboard/data")
 def dashboard_data():
     from flask import jsonify
     ready, message, _cfg = _dashboard_setup_status()
     if not ready:
         return jsonify({"error": message, "setup_required": True}), 400
+    initial_token_json = str((_cfg or {}).get("gsc_token_json") or "")
     try:
         period = max(7, min(90, int(request.args.get("period", 28))))
     except (ValueError, TypeError):
@@ -1763,6 +1776,7 @@ def dashboard_data():
     try:
         from modules.gsc_api import get_dashboard_data
         data = get_dashboard_data(period_days=period)
+        _persist_dashboard_refreshed_gsc_token(initial_token_json)
         status = 503 if isinstance(data, dict) and data.get("error") else 200
         return jsonify(data), status
     except Exception as exc:
@@ -1775,6 +1789,7 @@ def dashboard_ai():
     ready, message, _cfg = _dashboard_setup_status()
     if not ready:
         return jsonify({"ai_summary": "", "ai_error": message, "setup_required": True}), 400
+    initial_token_json = str((_cfg or {}).get("gsc_token_json") or "")
     try:
         period = max(7, min(90, int(request.args.get("period", 28))))
     except (ValueError, TypeError):
@@ -1783,7 +1798,9 @@ def dashboard_ai():
         _clear_dashboard_cache_for_active_site((period,))
     try:
         from modules.gsc_api import get_dashboard_ai
-        return jsonify(get_dashboard_ai(period_days=period))
+        data = get_dashboard_ai(period_days=period)
+        _persist_dashboard_refreshed_gsc_token(initial_token_json)
+        return jsonify(data)
     except Exception as exc:
         return jsonify({"ai_summary": "", "ai_error": str(exc)})
 

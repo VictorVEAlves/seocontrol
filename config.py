@@ -180,6 +180,18 @@ def _load_site_config() -> dict:
     return {}
 
 
+def update_runtime_site_config(**kwargs) -> dict:
+    """Update the request/job scoped site config without touching local files."""
+    cfg = _load_site_config()
+    cfg = dict(cfg) if isinstance(cfg, dict) else {}
+    for key, value in kwargs.items():
+        if value is not None:
+            cfg[key] = value
+    if _using_runtime_site_config():
+        _RUNTIME_SITE_CONFIG.set(cfg)
+    return cfg
+
+
 def _using_runtime_site_config() -> bool:
     if _RUNTIME_SITE_CONFIG.get() is not None:
         return True
