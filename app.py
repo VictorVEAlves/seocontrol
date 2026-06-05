@@ -3465,10 +3465,10 @@ def _start_shopify_generate_job(payload: dict) -> str:
                 "message": "Lendo itens da Shopify",
             })
             _shopify_job_append(job_id, "Lendo Shopify...")
-            resources = shopify_seo.fetch_resources(client, resource, limit, query)
-            if urls:
-                audited_for_filter = shopify_seo.audit_resources(resources)
-                resources = [item for item in audited_for_filter if shopify_seo._matches_urls(item, urls)]
+            resources = (
+                shopify_seo.fetch_resources_for_urls(client, resource, urls, limit, query)
+                if urls else shopify_seo.fetch_resources(client, resource, limit, query)
+            )
             audited = shopify_seo.audit_resources(resources)
             targets = [item for item in audited if item.get("needs_optimization") or force]
             total = len(targets)
@@ -4411,10 +4411,11 @@ def shopify_audit_api():
         urls = _split_urls(data.get("urls") or "")
         shopify_seo = _shopify_mod()
         client = shopify_seo.ShopifyGraphQLClient(shopify_seo.ShopifyCredentials.from_env())
-        resources = shopify_seo.fetch_resources(client, resource, limit, query)
+        resources = (
+            shopify_seo.fetch_resources_for_urls(client, resource, urls, limit, query)
+            if urls else shopify_seo.fetch_resources(client, resource, limit, query)
+        )
         audited = shopify_seo.audit_resources(resources)
-        if urls:
-            audited = [row for row in audited if shopify_seo._matches_urls(row, urls)]
         needs = [row for row in audited if row.get("needs_optimization")]
         summary = {"high": 0, "medium": 0, "low": 0}
         rows = []

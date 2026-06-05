@@ -75,6 +75,52 @@ def test_shopify_queue_endpoint_returns_payload(monkeypatch):
     assert data["rows"][0]["status_label"] == "Em revisão"
 
 
+def test_shopify_audit_uses_url_targeted_fetch(monkeypatch):
+    monkeypatch.setenv("AUTH_REQUIRED", "0")
+    import modules.shopify_seo as shopify_seo
+
+    calls = {}
+    monkeypatch.setattr(shopify_seo.ShopifyCredentials, "from_env", staticmethod(lambda: object()))
+    monkeypatch.setattr(shopify_seo, "ShopifyGraphQLClient", lambda _credentials: object())
+
+    def fake_fetch(_client, resource, urls, limit, query):
+        calls.update({"resource": resource, "urls": urls, "limit": limit, "query": query})
+        return [
+            {
+                "resource_type": "collection",
+                "id": "gid://shopify/Collection/1",
+                "handle": "lacoste",
+                "title": "Lacoste",
+                "description_text": "",
+                "seo_title": "",
+                "seo_description": "",
+            }
+        ]
+
+    monkeypatch.setattr(shopify_seo, "fetch_resources_for_urls", fake_fetch)
+
+    response = dashboard.app.test_client().post(
+        "/shopify/audit",
+        json={
+            "resource": "collections",
+            "limit": 20,
+            "query": "status:active",
+            "urls": "/collections/lacoste",
+        },
+    )
+    data = response.get_json()
+
+    assert response.status_code == 200
+    assert calls == {
+        "resource": "collections",
+        "urls": ["/collections/lacoste"],
+        "limit": 20,
+        "query": "status:active",
+    }
+    assert data["total"] == 1
+    assert data["rows"][0]["path"] == "/collections/lacoste"
+
+
 def test_shopify_problem_translation_is_portuguese():
     detail = dashboard._shopify_problem_detail("SEO description missing in Shopify")
 

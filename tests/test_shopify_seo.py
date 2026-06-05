@@ -350,3 +350,77 @@ def test_shopify_credentials_read_runtime_site_config(monkeypatch):
     assert credentials.store_domain == "runtime-store.myshopify.com"
     assert credentials.client_id == "runtime-client"
     assert credentials.client_secret == "runtime-secret"
+
+
+def test_fetch_resources_for_urls_uses_collection_handle_lookup(monkeypatch):
+    monkeypatch.setattr(shopify_seo, "_public_base_url", lambda: "https://www.secretshop.com.br")
+
+    class FakeClient:
+        def fetch_collection_by_handle(self, handle):
+            assert handle == "lacoste"
+            return {
+                "id": "gid://shopify/Collection/1",
+                "title": "Lacoste",
+                "handle": "lacoste",
+                "descriptionHtml": "",
+                "seo": {"title": "", "description": ""},
+            }
+
+        def fetch_product_by_handle(self, handle):
+            raise AssertionError("product lookup should not run for collection URL")
+
+        def fetch_collections(self, limit=None, query=None):
+            raise AssertionError("direct URL lookup should avoid limited collection scan")
+
+        def fetch_products(self, limit=None, query=None):
+            raise AssertionError("product scan should not run")
+
+    resources = shopify_seo.fetch_resources_for_urls(
+        FakeClient(),
+        "collections",
+        ["/collections/lacoste"],
+        limit=20,
+        query="status:active",
+    )
+
+    assert len(resources) == 1
+    assert resources[0]["handle"] == "lacoste"
+    assert resources[0]["path"] == "/collections/lacoste"
+
+
+def test_fetch_resources_for_urls_falls_back_to_full_collection_scan(monkeypatch):
+    monkeypatch.setattr(shopify_seo, "_public_base_url", lambda: "https://www.secretshop.com.br")
+    limits = []
+
+    class FakeClient:
+        def fetch_collection_by_handle(self, handle):
+            raise RuntimeError("collectionByHandle unavailable")
+
+        def fetch_collections(self, limit=None, query=None):
+            limits.append(limit)
+            if limit is None:
+                return [
+                    {
+                        "id": "gid://shopify/Collection/1",
+                        "title": "Lacoste",
+                        "handle": "lacoste",
+                        "descriptionHtml": "",
+                        "seo": {"title": "", "description": ""},
+                    }
+                ]
+            return []
+
+        def fetch_products(self, limit=None, query=None):
+            return []
+
+    resources = shopify_seo.fetch_resources_for_urls(
+        FakeClient(),
+        "collections",
+        ["/collections/lacoste"],
+        limit=20,
+        query="status:active",
+    )
+
+    assert limits == [None]
+    assert len(resources) == 1
+    assert resources[0]["handle"] == "lacoste"

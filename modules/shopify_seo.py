@@ -21,6 +21,7 @@ from datetime import datetime
 from html import unescape
 from pathlib import Path
 from typing import Iterable
+from urllib.parse import urlparse
 
 import requests
 
@@ -490,6 +491,40 @@ class ShopifyGraphQLClient:
                 ]
         return items
 
+    def fetch_product_by_handle(self, handle: str) -> dict | None:
+        self._require_read_products_scope()
+        gql = """
+        query ShopifySeoProductByHandle($handle: String!) {
+          productByHandle(handle: $handle) {
+            id
+            title
+            handle
+            status
+            vendor
+            productType
+            descriptionHtml
+            onlineStoreUrl
+            seo { title description }
+          }
+        }
+        """
+        return (self.graphql(gql, {"handle": handle}).get("productByHandle") or None)
+
+    def fetch_collection_by_handle(self, handle: str) -> dict | None:
+        self._require_read_products_scope()
+        gql = """
+        query ShopifySeoCollectionByHandle($handle: String!) {
+          collectionByHandle(handle: $handle) {
+            id
+            title
+            handle
+            descriptionHtml
+            seo { title description }
+          }
+        }
+        """
+        return (self.graphql(gql, {"handle": handle}).get("collectionByHandle") or None)
+
     def _require_read_products_scope(self) -> None:
         if "read_products" in self.granted_scopes:
             return
@@ -743,6 +778,82 @@ def fetch_resources(
     if resource in ("all", "collections"):
         resources.extend(normalize_collection(item) for item in client.fetch_collections(limit, query))
     return resources
+
+
+def _handle_from_url(value: str) -> tuple[str, str] | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    parsed = urlparse(raw if "://" in raw else "https://placeholder.local" + (raw if raw.startswith("/") else "/" + raw))
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) < 2:
+        return None
+    kind, handle = parts[0].lower(), parts[1].strip()
+    if kind in {"products", "collections"} and handle:
+        return kind, handle
+    return None
+
+
+def _resource_allowed(kind: str, resource: str) -> bool:
+    return resource == "all" or resource == kind
+
+
+def _dedupe_resources(resources: Iterable[dict]) -> list[dict]:
+    seen: set[str] = set()
+    deduped: list[dict] = []
+    for item in resources:
+        key = f"{item.get('resource_type')}:{item.get('id') or item.get('handle')}"
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def fetch_resources_for_urls(
+    client: ShopifyGraphQLClient,
+    resource: str,
+    urls_filter: Iterable[str] | None,
+    limit: int | None = None,
+    query: str | None = None,
+) -> list[dict]:
+    """Fetch URL-targeted Shopify resources without depending on the first page limit."""
+    urls = [str(url or "").strip() for url in urls_filter or [] if str(url or "").strip()]
+    if not urls:
+        return fetch_resources(client, resource, limit, query)
+
+    fetched: list[dict] = []
+    direct_failed = False
+    for url in urls:
+        parsed = _handle_from_url(url)
+        if not parsed:
+            continue
+        kind, handle = parsed
+        if not _resource_allowed(kind, resource):
+            continue
+        try:
+            if kind == "products":
+                raw = client.fetch_product_by_handle(handle)
+                if raw:
+                    fetched.append(normalize_product(raw))
+            elif kind == "collections":
+                raw = client.fetch_collection_by_handle(handle)
+                if raw:
+                    fetched.append(normalize_collection(raw))
+        except Exception:
+            direct_failed = True
+
+    audited_direct = audit_resources(_dedupe_resources(fetched))
+    matched_direct = [item for item in audited_direct if _matches_urls(item, urls)]
+    if len(matched_direct) == len([u for u in urls if _handle_from_url(u)]):
+        return _dedupe_resources(matched_direct)
+
+    # Fallback: when a direct-by-handle field is unavailable in the Shopify API,
+    # scan all resources of the selected type and apply the URL filter afterwards.
+    broad_limit = None if direct_failed or urls else limit
+    broad = audit_resources(fetch_resources(client, resource, broad_limit, query))
+    matched_broad = [item for item in broad if _matches_urls(item, urls)]
+    return _dedupe_resources([*matched_direct, *matched_broad])
 
 
 def _page_for_generation(resource: dict) -> dict:
@@ -1016,19 +1127,21 @@ def _build_client() -> ShopifyGraphQLClient:
 
 def _cmd_audit(args) -> int:
     client = _build_client()
-    resources = fetch_resources(client, args.resource, args.limit, args.query)
+    resources = (
+        fetch_resources_for_urls(client, args.resource, args.urls, args.limit, args.query)
+        if args.urls else fetch_resources(client, args.resource, args.limit, args.query)
+    )
     audited = audit_resources(resources)
-    if args.urls:
-        audited = [item for item in audited if _matches_urls(item, args.urls)]
     print_audit(audited, top=args.top)
     return 0
 
 
 def _cmd_generate(args) -> int:
     client = _build_client()
-    resources = fetch_resources(client, args.resource, args.limit, args.query)
-    if args.urls:
-        resources = [item for item in audit_resources(resources) if _matches_urls(item, args.urls)]
+    resources = (
+        fetch_resources_for_urls(client, args.resource, args.urls, args.limit, args.query)
+        if args.urls else fetch_resources(client, args.resource, args.limit, args.query)
+    )
     audited = audit_resources(resources)
     targets = [item for item in audited if item.get("needs_optimization") or args.force]
     print(
