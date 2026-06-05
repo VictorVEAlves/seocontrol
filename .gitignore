@@ -23,6 +23,9 @@ node_modules/
 # Runtime reports and generated data
 reports/
 pending_changes.json
+shopify_admin_token.json
+shopify_seo_changes.json
+shopify_seo_publish_log.json
 geo_results.json
 blog_briefs.json
 blog_ideas.json

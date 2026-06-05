@@ -45,17 +45,19 @@ OPENROUTER_FALLBACK_MODELS = [
     model.strip()
     for model in os.environ.get(
         "OPENROUTER_FALLBACK_MODELS",
-        "openai/gpt-oss-20b:free,deepseek/deepseek-v4-flash:free,"
-        "qwen/qwen3-next-80b-a3b-instruct:free,z-ai/glm-4.5-air:free,"
-        "meta-llama/llama-3.3-70b-instruct:free,openrouter/free",
+        "openrouter/free",
     ).split(",")
     if model.strip()
 ]
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+OLLAMA_ENABLED = os.environ.get("OLLAMA_ENABLED", "").strip().lower() in {"1", "true", "yes", "sim"}
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b-instruct")
 AI_PROVIDER_ORDER = [
     provider.strip()
     for provider in os.environ.get(
         "AI_PROVIDER_ORDER",
-        "openrouter,groq,gemini,mistral,anthropic",
+        "openrouter,groq,gemini,mistral,anthropic,ollama",
     ).split(",")
     if provider.strip()
 ]
@@ -66,6 +68,7 @@ PROVIDER_API_KEYS = {
     "mistral": MISTRAL_API_KEY,
     "gemini": GEMINI_API_KEY,
     "anthropic": ANTHROPIC_API_KEY,
+    "ollama": OLLAMA_BASE_URL if OLLAMA_ENABLED else "",
 }
 
 PROVIDER_ENV_KEYS = {
@@ -74,6 +77,7 @@ PROVIDER_ENV_KEYS = {
     "mistral": "MISTRAL_API_KEY",
     "gemini": "GEMINI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
+    "ollama": "OLLAMA_BASE_URL",
 }
 
 
@@ -81,6 +85,13 @@ def get_provider_api_key(provider: str = "") -> str:
     """Return the configured API key for a specific provider."""
     provider = provider or ""
     cfg = _load_site_config()
+    if provider == "ollama":
+        base_url = str(cfg.get("OLLAMA_BASE_URL") or os.environ.get("OLLAMA_BASE_URL") or OLLAMA_BASE_URL).rstrip("/")
+        enabled = (
+            str(cfg.get("OLLAMA_ENABLED") or os.environ.get("OLLAMA_ENABLED") or "").strip().lower()
+            in {"1", "true", "yes", "sim"}
+        )
+        return base_url if enabled else ""
     site_keys = cfg.get("ai_api_keys") if isinstance(cfg.get("ai_api_keys"), dict) else {}
     if site_keys.get(provider):
         return str(site_keys[provider])
@@ -113,7 +124,7 @@ def get_provider_sequence(preferred: str = "") -> list[tuple[str, str]]:
 # Usa automaticamente o primeiro com chave configurada
 def get_default_provider() -> tuple:
     """Returns (provider_name, api_key) for the first configured provider.
-    Priority: openrouter > groq > mistral > gemini > anthropic.
+    Priority follows AI_PROVIDER_ORDER.
     OpenRouter is first because it gives one API key for many free model variants.
     """
     for name, key in get_provider_sequence():

@@ -1,6 +1,9 @@
+import importlib
+
 from collectors.crawler import is_internal, normalize_url, should_skip
 from modules import crawler as crawler_module
 import requests
+import config as config_module
 
 
 def test_normalize_url_removes_query_fragment_and_trailing_slash(monkeypatch):
@@ -58,3 +61,15 @@ def test_get_page_retries_remote_disconnect_with_browser_headers(monkeypatch):
     assert headers["_fetch_attempts"] == 2
     assert calls[0]["headers"]["Connection"] == "close"
     assert calls[0]["headers"]["Referer"] == "https://example.com/"
+
+
+def test_crawler_imports_when_retry_setting_is_missing(monkeypatch):
+    with monkeypatch.context() as m:
+        m.delattr(config_module, "CRAWL_RETRIES", raising=False)
+        m.setenv("SEO_CRAWL_RETRIES", "3")
+
+        reloaded = importlib.reload(crawler_module)
+
+        assert reloaded.CRAWL_RETRIES == 3
+
+    importlib.reload(crawler_module)

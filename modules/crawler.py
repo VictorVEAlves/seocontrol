@@ -6,7 +6,38 @@ from urllib.parse import urljoin, urlparse
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import get_site_url, CRAWL_DELAY, REQUEST_TIMEOUT, CRAWL_RETRIES, USER_AGENT
+import config as _config
+
+get_site_url = _config.get_site_url
+
+
+def _float_setting(name: str, env_key: str, default: str) -> float:
+    try:
+        return float(getattr(_config, name, os.environ.get(env_key, default)))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _int_setting(name: str, env_key: str, default: str) -> int:
+    try:
+        return int(getattr(_config, name, os.environ.get(env_key, default)))
+    except (TypeError, ValueError):
+        return int(default)
+
+
+CRAWL_DELAY = _float_setting("CRAWL_DELAY", "SEO_CRAWL_DELAY", "1.0")
+REQUEST_TIMEOUT = _float_setting("REQUEST_TIMEOUT", "SEO_REQUEST_TIMEOUT", "15")
+CRAWL_RETRIES = _int_setting("CRAWL_RETRIES", "SEO_CRAWL_RETRIES", "2")
+USER_AGENT = getattr(
+    _config,
+    "USER_AGENT",
+    os.environ.get(
+        "SEO_CRAWLER_USER_AGENT",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/125.0.0.0 Safari/537.36",
+    ),
+)
 
 BASE_HEADERS = {
     "User-Agent": USER_AGENT,

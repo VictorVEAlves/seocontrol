@@ -3,6 +3,7 @@ import hashlib
 import json as _json_mod
 import os
 import queue as _queue_mod
+import re
 import subprocess
 import sys
 import threading
@@ -497,7 +498,7 @@ def _get_job(job_id: str) -> dict | None:
         job = dict(TOOL_JOBS.get(job_id) or {}) or None
     if not job:
         return None
-    if _auth_required() and job.get("user_id") != _current_user_id():
+    if has_request_context() and _auth_required() and job.get("user_id") != _current_user_id():
         return None
     return job
 
@@ -520,7 +521,7 @@ ALLOWED_TOOL_MODULES = {
     "cannibalization": "Canibalizacao de keywords",
 }
 
-AI_PROVIDERS = ["auto", "openrouter", "groq", "gemini", "mistral", "anthropic"]
+AI_PROVIDERS = ["auto", "openrouter", "groq", "gemini", "mistral", "anthropic", "ollama"]
 AI_TOOL_MODULES = {"blog-ideas", "ai-analysis", "generate", "suggest"}
 TOP_TOOL_MODULES = {"blog-ideas", "ai-analysis", "suggest"}
 URL_TOOL_MODULES = {"onpage", "ai-analysis", "blog-ideas", "monitor"}
@@ -1223,6 +1224,7 @@ NAV_ICONS = {
     "content":   '<svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="12" height="12" rx="1.5"/><line x1="5" y1="7" x2="11" y2="7"/><line x1="5" y1="10" x2="9" y2="10"/></svg>',
     "blog":      '<svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10 2l3 3-7 7H3v-3l7-7z"/></svg>',
     "tools":     '<svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M11.5 1.5a3 3 0 0 1 0 4.24L5 12.24 2 13l.76-3L9 3.5a3 3 0 0 1 2.5-2z"/></svg>',
+    "shopify":   '<svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 5.5h10l-1 9H4L3 5.5z"/><path d="M5.5 5.5a2.5 2.5 0 0 1 5 0"/><circle cx="6" cy="9" r=".6" fill="currentColor" stroke="none"/><circle cx="10" cy="9" r=".6" fill="currentColor" stroke="none"/></svg>',
 
     "insights":  '<svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1v2M8 13v2M1 8h2M13 8h2"/><circle cx="8" cy="8" r="3"/><path d="M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M3.5 12.5l1.4-1.4M11.1 4.9l1.4-1.4"/></svg>',
     "reports":   '<svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 1.5h5.5L13 5v9.5H4z" rx="1"/><polyline points="9.5 1.5 9.5 5 13 5"/><line x1="5.5" y1="7.5" x2="10.5" y2="7.5"/><line x1="5.5" y1="10" x2="8.5" y2="10"/></svg>',
@@ -1293,6 +1295,7 @@ def page_shell(title: str, body: str, active: str = "") -> str:
     <nav class="nav-section">
       <div class="nav-label">Conteúdo</div>
       <nav class="nav">
+        {nav_link("/shopify", "Shopify SEO", "shopify")}
         {nav_link("/blog-ideas", "Ideias de blog", "blog")}
       </nav>
     </nav>
@@ -2622,7 +2625,7 @@ def blog_ideas():
             raise StopIteration
         query = (
             sb.table("content_changes")
-            .select("id, status, url, provider, meta_title, meta_description, raw, created_at", count="exact")
+            .select("id, status, url, provider, meta_title, meta_description, description_html, raw, created_at", count="exact")
             .ilike("provider", "query_suggester%")
         )
         if site_id:
@@ -2657,8 +2660,9 @@ def blog_ideas():
         row_id    = str(row.get("id") or "")
         row_title = esc(row.get("meta_title", "") or "")
         meta_desc = esc(row.get("meta_description", "") or "")
-        btn_label = "Ver conteúdo" if status == "approved" else "Gerar conteúdo"
-        btn_icon  = "📄" if status == "approved" else "✨"
+        has_content = bool(str(row.get("description_html") or "").strip())
+        btn_label = "Ver conteúdo" if has_content else "Gerar conteúdo"
+        btn_icon  = "📄" if has_content else "✨"
 
         query_tags = "".join(
             f'<span style="background:#f1f5f9;color:#475569;font-size:11px;padding:2px 8px;border-radius:10px;white-space:nowrap">{esc(q)}</span>'
@@ -2686,7 +2690,7 @@ def blog_ideas():
     {f'<div style="display:flex;flex-wrap:wrap;gap:4px">{section_tags}</div>' if section_tags else ''}
   </div>
   <div style="flex-shrink:0;padding-top:4px">
-    <button class="btn btn-sm btn-primary" onclick="openGenerate('{row_id}','{row_title}')">{btn_icon} {btn_label}</button>
+    <button class="btn btn-sm btn-primary" onclick="openBlogContent('{row_id}','{row_title}',{str(has_content).lower()})">{btn_icon} {btn_label}</button>
   </div>
 </div>"""
 
@@ -2700,6 +2704,7 @@ def blog_ideas():
       </div>
       <div style="display:flex;gap:8px">
         <button class="btn btn-sm" onclick="copyHtml()" id="copy-btn" style="display:none">Copiar HTML</button>
+        <button class="btn btn-sm btn-primary" onclick="regenerateContent()" id="regen-btn" style="display:none">Regenerar</button>
         <button class="btn btn-sm" onclick="closeGenerate()">Fechar</button>
       </div>
     </div>
@@ -2785,7 +2790,7 @@ function _countdown(secs, id, title) {
   }, 1000);
 }
 
-function _doFetch(id, title, allowRetry) {
+function _doFetchLegacy(id, title, allowRetry) {
   fetch('/blog-ideas/' + id + '/generate', {method:'POST'})
     .then(function(r){ return r.json(); })
     .then(function(d) {
@@ -2828,7 +2833,7 @@ function _doFetch(id, title, allowRetry) {
     });
 }
 
-function openGenerate(id, title) {
+function openGenerateLegacy(id, title) {
   if (_genCountdown) { clearInterval(_genCountdown); _genCountdown = null; }
   document.getElementById('gen-title').textContent = title;
   document.getElementById('gen-loading').style.display = 'block';
@@ -2860,6 +2865,117 @@ function copyHtml() {
     setTimeout(function(){ btn.textContent = orig; }, 2000);
   });
 }
+
+var _genCurrentId = '';
+var _genCurrentTitle = '';
+
+function _resetGenerateModal(title) {
+  if (_genCountdown) { clearInterval(_genCountdown); _genCountdown = null; }
+  _genHtml = '';
+  document.getElementById('gen-title').textContent = title;
+  document.getElementById('gen-provider-label').textContent = 'Post de blog gerado por IA';
+  document.getElementById('gen-loading').style.display = 'block';
+  document.getElementById('gen-error').style.display = 'none';
+  document.getElementById('gen-error').textContent = '';
+  document.getElementById('gen-tabs').style.display = 'none';
+  document.getElementById('copy-btn').style.display = 'none';
+  document.getElementById('regen-btn').style.display = 'none';
+  document.getElementById('gen-preview').innerHTML = '';
+  document.getElementById('gen-html').value = '';
+  document.getElementById('gen-modal').style.display = 'block';
+  document.body.style.overflow = 'hidden';
+}
+
+function _showGenerateError(message) {
+  document.getElementById('gen-loading').style.display = 'none';
+  var el = document.getElementById('gen-error');
+  el.textContent = message;
+  el.style.display = 'block';
+}
+
+function _showGeneratedContent(d, labelPrefix) {
+  _genHtml = d.html;
+  if (d.provider) {
+    document.getElementById('gen-provider-label').textContent = (labelPrefix || 'Gerado por') + ' ' + d.provider;
+  }
+  document.getElementById('gen-loading').style.display = 'none';
+  document.getElementById('gen-preview').innerHTML = _genHtml;
+  document.getElementById('gen-html').value = _genHtml;
+  document.getElementById('gen-tabs').style.display = 'block';
+  document.getElementById('copy-btn').style.display = 'inline-block';
+  document.getElementById('regen-btn').style.display = 'inline-block';
+  showTab('preview');
+}
+
+function _doFetch(id, title, allowRetry) {
+  fetch('/blog-ideas/' + id + '/generate', {method:'POST'})
+    .then(function(r){ return r.json(); })
+    .then(function(d) {
+      if (d.rate_limited && allowRetry) {
+        _countdown(90, id, title);
+        return;
+      }
+      if (d.rate_limited) {
+        _showGenerateError('Quota da IA esgotada mesmo apos aguardar. Espere alguns minutos e tente novamente.');
+        return;
+      }
+      if (d.error) {
+        _showGenerateError(d.error);
+        return;
+      }
+      if (!d.html) {
+        _showGenerateError('A IA respondeu, mas o conteudo veio vazio. Tente novamente.');
+        return;
+      }
+      _showGeneratedContent(d, 'Gerado por');
+    })
+    .catch(function(e) {
+      _showGenerateError('Erro de rede: ' + e.message);
+    });
+}
+
+function _doView(id, title) {
+  fetch('/blog-ideas/' + id + '/content')
+    .then(function(r){ return r.json(); })
+    .then(function(d) {
+      if (d.error) {
+        _showGenerateError(d.error);
+        return;
+      }
+      if (!d.html) {
+        _showGenerateError('Conteudo salvo nao encontrado. Use Regenerar para criar novamente.');
+        return;
+      }
+      _showGeneratedContent(d, 'Conteudo salvo');
+    })
+    .catch(function(e) {
+      _showGenerateError('Erro de rede: ' + e.message);
+    });
+}
+
+function openBlogContent(id, title, hasContent) {
+  _genCurrentId = id;
+  _genCurrentTitle = title;
+  _resetGenerateModal(title);
+  if (hasContent) {
+    _setLoadingMsg('Carregando conteudo salvo...', 'Nenhuma chamada de IA sera feita.');
+    _doView(id, title);
+  } else {
+    _setLoadingMsg('Gerando conteudo com IA...', 'Isso pode levar 15-30 segundos');
+    _doFetch(id, title, true);
+  }
+}
+
+function openGenerate(id, title) {
+  openBlogContent(id, title, false);
+}
+
+function regenerateContent() {
+  if (!_genCurrentId) return;
+  _resetGenerateModal(_genCurrentTitle || 'Conteudo');
+  _setLoadingMsg('Regenerando conteudo com IA...', 'O conteudo salvo sera substituido.');
+  _doFetch(_genCurrentId, _genCurrentTitle, true);
+}
 </script>"""
 
     empty = '<div style="text-align:center;color:var(--muted);padding:48px 0">Nenhuma ideia salva. Use <a href="/tools?module=blog-ideas">Ferramentas → Ideias de Blog</a> para gerar.</div>'
@@ -2873,6 +2989,30 @@ function copyHtml() {
 {cards_html or empty}
 {_pagination_html(page, total, PAGE_SIZE, "/blog-ideas?")}"""
     return page_shell("Ideias de Blog", body)
+
+
+@app.route("/blog-ideas/<idea_id>/content", methods=["GET"])
+def blog_idea_content(idea_id):
+    try:
+        sb = get_supabase()
+        site_id = _current_site_id()
+        if _is_authenticated() and not site_id:
+            return jsonify({"html": None, "error": "Cadastre um site antes de acessar ideias de blog."}), 400
+        query = sb.table("content_changes").select("id, description_html, provider, raw").eq("id", idea_id)
+        if site_id:
+            query = query.eq("site_id", site_id)
+        res = query.single().execute()
+        row = res.data or {}
+    except Exception as exc:
+        return jsonify({"html": None, "error": f"Conteudo nao encontrado: {exc}"}), 404
+
+    html_content = str(row.get("description_html") or "").strip()
+    if not html_content:
+        return jsonify({"html": None, "error": "Conteudo salvo nao encontrado. Gere o conteudo primeiro."}), 404
+
+    raw = row.get("raw") or {}
+    provider = raw.get("blog_content_provider") or row.get("provider") or "banco"
+    return jsonify({"html": html_content, "error": None, "provider": provider})
 
 
 @app.route("/blog-ideas/<idea_id>/generate", methods=["POST"])
@@ -2898,7 +3038,19 @@ def blog_idea_generate(idea_id):
 
     if not result.get("error"):
         try:
-            query = sb.table("content_changes").update({"status": "approved"}).eq("id", idea_id)
+            raw_update = dict(raw)
+            raw_update["blog_content_provider"] = result.get("provider") or ""
+            raw_update["blog_content_generated_at"] = datetime.now(timezone.utc).isoformat()
+            raw_update["blog_content_length"] = len(result.get("html") or "")
+            query = (
+                sb.table("content_changes")
+                .update({
+                    "status": "approved",
+                    "description_html": result.get("html") or "",
+                    "raw": raw_update,
+                })
+                .eq("id", idea_id)
+            )
             site_id = _current_site_id()
             if site_id:
                 query = query.eq("site_id", site_id)
@@ -2907,6 +3059,1366 @@ def blog_idea_generate(idea_id):
             pass
 
     return jsonify(result)
+
+
+# ── Shopify SEO frontend ─────────────────────────────────────────────────────
+
+def _shopify_mod():
+    from modules import shopify_seo
+    return shopify_seo
+
+
+def _shopify_config_state() -> dict:
+    store = os.environ.get("SHOPIFY_STORE_DOMAIN", "").strip()
+    client_id = os.environ.get("SHOPIFY_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("SHOPIFY_CLIENT_SECRET", "").strip()
+    admin_token = os.environ.get("SHOPIFY_ADMIN_TOKEN", "").strip()
+    public_base = os.environ.get("SHOPIFY_PUBLIC_BASE_URL", "").strip()
+    api_version = os.environ.get("SHOPIFY_API_VERSION", "2026-04").strip() or "2026-04"
+    site_name = os.environ.get("SHOPIFY_SITE_NAME", "").strip()
+    business_context = os.environ.get("SHOPIFY_BUSINESS_CONTEXT", "").strip()
+    content_guidelines = os.environ.get("SHOPIFY_CONTENT_GUIDELINES", "").strip()
+    return {
+        "store_domain": store,
+        "client_id": _mask_key(client_id),
+        "client_secret": _mask_key(client_secret),
+        "admin_token": _mask_key(admin_token),
+        "public_base_url": public_base,
+        "api_version": api_version,
+        "site_name": site_name,
+        "business_context": business_context,
+        "content_guidelines": content_guidelines,
+        "has_store_domain": bool(store),
+        "has_client_credentials": bool(client_id and client_secret),
+        "has_admin_token": bool(admin_token),
+        "ready": bool(store and ((client_id and client_secret) or admin_token)),
+    }
+
+
+def _shopify_runtime_context_config() -> dict:
+    cfg = _shopify_config_state()
+    site_url = str(cfg.get("public_base_url") or "").rstrip("/")
+    store_domain = str(cfg.get("store_domain") or "").strip()
+    site_name = str(cfg.get("site_name") or "").strip()
+    if not site_name:
+        site_name = _default_site_name(site_url or store_domain)
+    business_context = str(cfg.get("business_context") or "").strip()
+    if not business_context:
+        business_context = (
+            f"Loja virtual Shopify {site_name}. Gere SEO apenas com base na loja, "
+            "na categoria/produto e nas informacoes disponiveis na Shopify. "
+            "Nao cite marcas, ofertas ou nomes de outras lojas se eles nao aparecerem no item."
+        )
+    content_guidelines = str(cfg.get("content_guidelines") or "").strip()
+    if not content_guidelines:
+        content_guidelines = (
+            "Escreva em PT-BR, com tom comercial claro e natural. "
+            "Nao invente promocoes, frete gratis, autenticidade ou marcas nao informadas. "
+            "Evite repetir o nome de outra loja."
+        )
+    return {
+        "site_url": site_url,
+        "site_name": site_name,
+        "business_context": business_context,
+        "content_guidelines": content_guidelines,
+    }
+
+
+def _shopify_form_value(data: dict, *keys: str) -> str:
+    for key in keys:
+        value = str(data.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _single_line_setting(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _looks_like_browser_autofill(value: str) -> bool:
+    value = str(value or "").strip()
+    return bool(value and ("@" in value or "\n" in value or "\r" in value))
+
+
+def _shopify_default_provider() -> str:
+    from config import get_provider_api_key
+
+    for provider in ("groq", "openrouter", "gemini", "mistral", "anthropic", "ollama"):
+        if get_provider_api_key(provider):
+            return provider
+    return "auto"
+
+
+def _shopify_resource_label(value: str) -> str:
+    return {"product": "Produto", "collection": "Coleção"}.get(str(value or ""), "Página")
+
+
+def _shopify_status_label(value: str) -> str:
+    labels = {
+        "pending_review": "Em revisão",
+        "approved": "Aprovado",
+        "published": "Publicado",
+        "error": "Erro",
+    }
+    return labels.get(str(value or ""), str(value or "Pendente"))
+
+
+def _shopify_status_class(value: str) -> str:
+    return {
+        "pending_review": "warn",
+        "approved": "ok",
+        "published": "info",
+        "error": "bad",
+    }.get(str(value or ""), "muted")
+
+
+def _shopify_status_pt(value: str) -> str:
+    return {
+        "missing": "ausente",
+        "short": "curto",
+        "long": "longo",
+        "ok": "ok",
+    }.get(str(value or ""), str(value or ""))
+
+
+def _shopify_problem_detail(message: str) -> dict:
+    text = str(message or "")
+    lower = text.lower()
+
+    def _number(default: str = "") -> str:
+        import re as _re
+        match = _re.search(r"\((\d+)\s*(?:chars|words)", text)
+        return match.group(1) if match else default
+
+    if "seo title missing" in lower:
+        return {
+            "severity": "high",
+            "field": "Title SEO",
+            "title": "Title SEO ausente",
+            "detail": "O campo de title SEO está vazio na Shopify.",
+        }
+    if "seo description missing" in lower:
+        return {
+            "severity": "high",
+            "field": "Meta description",
+            "title": "Meta description ausente",
+            "detail": "O campo de descrição SEO está vazio na Shopify.",
+        }
+    if "seo title short" in lower:
+        chars = _number()
+        return {
+            "severity": "medium",
+            "field": "Title SEO",
+            "title": "Title SEO curto",
+            "detail": f"Tem {chars} caracteres; o ideal fica entre 45 e 60." if chars else "O title esta abaixo do tamanho ideal.",
+        }
+    if "seo title long" in lower:
+        chars = _number()
+        return {
+            "severity": "medium",
+            "field": "Title SEO",
+            "title": "Title SEO longo",
+            "detail": f"Tem {chars} caracteres; pode ser cortado nos resultados de busca." if chars else "O title está acima do tamanho ideal.",
+        }
+    if "seo description short" in lower:
+        chars = _number()
+        return {
+            "severity": "medium",
+            "field": "Meta description",
+            "title": "Meta description curta",
+            "detail": f"Tem {chars} caracteres; o alvo fica entre 145 e 160." if chars else "A description está abaixo do tamanho recomendado.",
+        }
+    if "seo description long" in lower:
+        chars = _number()
+        return {
+            "severity": "medium",
+            "field": "Meta description",
+            "title": "Meta description longa",
+            "detail": f"Tem {chars} caracteres; passou do limite de segurança de 170." if chars else "A description está acima do tamanho recomendado.",
+        }
+    if "seo description ends with ellipsis" in lower:
+        return {
+            "severity": "medium",
+            "field": "Meta description",
+            "title": "Meta description truncada",
+            "detail": "A description termina com reticências; gere uma versão completa sem corte artificial.",
+        }
+    if "description content thin" in lower:
+        words = _number("0")
+        return {
+            "severity": "low",
+            "field": "Conteúdo",
+            "title": "Descrição da página muito curta",
+            "detail": f"Conteúdo atual com {words} palavras; a categoria/produto precisa de mais contexto.",
+        }
+    if "seo title duplicated" in lower:
+        return {
+            "severity": "medium",
+            "field": "Title SEO",
+            "title": "Title SEO duplicado",
+            "detail": "Outra pagina usa o mesmo title, reduzindo clareza para o Google.",
+        }
+    if "seo description duplicated" in lower:
+        return {
+            "severity": "medium",
+            "field": "Meta description",
+            "title": "Meta description duplicada",
+            "detail": "Outra pagina usa a mesma description, reduzindo diferenciacao na SERP.",
+        }
+    return {
+        "severity": "low",
+        "field": "SEO",
+        "title": text or "Alerta SEO",
+        "detail": text,
+    }
+
+
+def _shopify_problem_details(messages: list[str]) -> list[dict]:
+    severity_rank = {"high": 0, "medium": 1, "low": 2}
+    details = [_shopify_problem_detail(message) for message in messages]
+    return sorted(details, key=lambda item: severity_rank.get(item.get("severity"), 9))
+
+
+def _shopify_priority(problem_details: list[dict]) -> dict:
+    severities = [item.get("severity") for item in problem_details]
+    if "high" in severities:
+        return {"level": "high", "label": "Alta"}
+    if "medium" in severities:
+        return {"level": "medium", "label": "Média"}
+    return {"level": "low", "label": "Baixa"}
+
+
+def _shopify_queue_payload(limit: int = 100) -> dict:
+    shopify_seo = _shopify_mod()
+    items = shopify_seo.load_queue()
+    counts = {"pending_review": 0, "approved": 0, "published": 0, "error": 0}
+    for item in items:
+        status = str(item.get("status") or "pending_review")
+        counts[status] = counts.get(status, 0) + 1
+    rows = []
+    for item in reversed(items[-limit:]):
+        proposal = item.get("proposal") or {}
+        current = item.get("current") or {}
+        proposal_content = shopify_seo._strip_html(proposal.get("description_html") or "")
+        rows.append({
+            "key": f"{item.get('resource_type')}:{item.get('id')}",
+            "id": item.get("id"),
+            "resource_type": item.get("resource_type"),
+            "resource_label": _shopify_resource_label(item.get("resource_type")),
+            "path": item.get("path") or item.get("url") or item.get("handle"),
+            "title": item.get("title") or item.get("handle") or "",
+            "status": item.get("status") or "pending_review",
+            "status_label": _shopify_status_label(item.get("status") or "pending_review"),
+            "status_class": _shopify_status_class(item.get("status") or "pending_review"),
+            "current_title": current.get("seo_title") or "",
+            "current_description": current.get("seo_description") or "",
+            "proposal_title": proposal.get("seo_title") or "",
+            "proposal_description": proposal.get("seo_description") or "",
+            "current_content_words": current.get("description_words") or 0,
+            "proposal_content": proposal_content,
+            "proposal_content_html": proposal.get("description_html") or "",
+            "updates_content": bool(proposal.get("update_description_html")),
+            "provider": item.get("provider") or "",
+            "generated_at": item.get("generated_at") or "",
+            "error": item.get("error") or "",
+        })
+    return {
+        "counts": counts,
+        "total": len(items),
+        "rows": rows,
+        "queue_file": str(shopify_seo.QUEUE_FILE),
+    }
+
+
+def _shopify_job_append(job_id: str, line: str) -> None:
+    job = _get_job(job_id) or {}
+    output = str(job.get("stdout") or "")
+    _update_job(job_id, {"stdout": output + line.rstrip() + "\n"})
+
+
+def _start_shopify_generate_job(payload: dict) -> str:
+    job_id = uuid.uuid4().hex
+    runtime_cfg = dict(_load_active_site_config() or {}) if _is_authenticated() else {}
+    runtime_cfg.update(_shopify_runtime_context_config())
+    provider = str(payload.get("provider") or _shopify_default_provider())
+    resource = str(payload.get("resource") or "all")
+    limit = max(1, min(500, int(payload.get("limit") or 20)))
+    query = str(payload.get("query") or "").strip() or None
+    urls = _split_urls(payload.get("urls") or "")
+    force = bool(payload.get("force"))
+    auto_approve = bool(payload.get("auto_approve"))
+    _register_job(job_id, {
+        "user_id": _current_user_id(),
+        "site_id": _current_site_id(),
+        "status": "running",
+        "command": f"shopify generate {resource} limit={limit} provider={provider}",
+        "returncode": None,
+        "stdout": "Iniciando Shopify SEO...\n",
+        "stderr": "",
+        "error": "",
+        "kind": "shopify",
+    })
+
+    def worker():
+        set_runtime_site_config(runtime_cfg)
+        try:
+            shopify_seo = _shopify_mod()
+            client = shopify_seo.ShopifyGraphQLClient(shopify_seo.ShopifyCredentials.from_env())
+            _update_job(job_id, {
+                "phase": "read",
+                "progress_current": 0,
+                "progress_total": 0,
+                "message": "Lendo itens da Shopify",
+            })
+            _shopify_job_append(job_id, "Lendo Shopify...")
+            resources = shopify_seo.fetch_resources(client, resource, limit, query)
+            if urls:
+                audited_for_filter = shopify_seo.audit_resources(resources)
+                resources = [item for item in audited_for_filter if shopify_seo._matches_urls(item, urls)]
+            audited = shopify_seo.audit_resources(resources)
+            targets = [item for item in audited if item.get("needs_optimization") or force]
+            total = len(targets)
+            _update_job(job_id, {
+                "phase": "generate",
+                "progress_current": 0,
+                "progress_total": total,
+                "message": f"{total} item(ns) na fila de geracao",
+            })
+            _shopify_job_append(job_id, f"{len(resources)} recurso(s); {len(targets)} alvo(s).")
+
+            saved_count = 0
+
+            def progress(index: int, total: int, row: dict) -> None:
+                _update_job(job_id, {
+                    "phase": "generate",
+                    "progress_current": max(0, index - 1),
+                    "progress_total": total,
+                    "message": f"Gerando {index}/{total}: {row.get('path') or row.get('handle')}",
+                })
+                _shopify_job_append(
+                    job_id,
+                    f"Gerando {index}/{total}: [{row.get('resource_type')}] {row.get('path') or row.get('handle')}",
+                )
+
+            def save_each(index: int, total: int, change: dict) -> None:
+                nonlocal saved_count
+                saved_count += 1
+                shopify_seo.upsert_queue([change])
+                _update_job(job_id, {
+                    "phase": "generate",
+                    "progress_current": index,
+                    "progress_total": total,
+                    "message": f"Sugestao salva: {change.get('path') or change.get('handle')}",
+                })
+                _shopify_job_append(job_id, f"ok {index}/{total} salvo: {change.get('path') or change.get('handle')}")
+
+            shopify_seo.generate_changes(
+                resources,
+                provider=provider if provider != "auto" else None,
+                auto_approve=auto_approve,
+                only_needs=not force,
+                progress_callback=progress,
+                change_callback=save_each,
+            )
+            _update_job(job_id, {
+                "status": "completed",
+                "returncode": 0,
+                "phase": "review",
+                "progress_current": saved_count,
+                "progress_total": saved_count,
+                "message": f"{saved_count} sugestao(oes) prontas para revisao",
+                "stdout": (_get_job(job_id) or {}).get("stdout", "") + f"Concluido: {saved_count} sugestao(oes).\n",
+            })
+        except Exception as exc:
+            _update_job(job_id, {
+                "status": "failed",
+                "returncode": 1,
+                "phase": "error",
+                "message": str(exc),
+                "error": str(exc),
+                "stderr": str(exc),
+            })
+        finally:
+            clear_runtime_site_config()
+
+    threading.Thread(target=worker, daemon=True).start()
+    return job_id
+
+
+def _shopify_credentials_form(cfg: dict) -> str:
+    return f"""
+    <form id="shopify-settings-form" onsubmit="saveShopifySettings(event)" autocomplete="off" data-lpignore="true">
+      <input type="text" name="shopify_autofill_decoy_user" autocomplete="username" tabindex="-1" aria-hidden="true" style="position:absolute;left:-10000px;width:1px;height:1px;opacity:0">
+      <input type="password" name="shopify_autofill_decoy_pass" autocomplete="current-password" tabindex="-1" aria-hidden="true" style="position:absolute;left:-10000px;width:1px;height:1px;opacity:0">
+      <div class="field">
+        <label>Domínio da loja</label>
+        <input name="store_domain" value="{esc(cfg['store_domain'])}" placeholder="wiyvq0-4w.myshopify.com" autocomplete="off" autocapitalize="off" spellcheck="false">
+      </div>
+      <div class="field">
+        <label>ID do cliente</label>
+        <input id="shopify-client-id-input" name="shopify_client_id" value="" placeholder="{esc(cfg['client_id'] or 'ID do cliente')}" autocomplete="new-password" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other">
+      </div>
+      <div class="field">
+        <label>Chave secreta</label>
+        <input id="shopify-client-secret-input" name="shopify_client_secret" type="password" value="" placeholder="{esc(cfg['client_secret'] or 'Chave secreta')}" autocomplete="new-password" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other">
+      </div>
+      <div class="field">
+        <label>Versão da API</label>
+        <input name="api_version" value="{esc(cfg['api_version'])}" autocomplete="off" autocapitalize="off" spellcheck="false">
+      </div>
+      <div class="field">
+        <label>URL pública</label>
+        <input name="public_base_url" value="{esc(cfg['public_base_url'])}" placeholder="https://www.secretshop.com.br" autocomplete="off" autocapitalize="off" spellcheck="false">
+      </div>
+      <div class="field shopify-context-field">
+        <label>Nome da loja / marca</label>
+        <input name="shopify_site_name" value="{esc(cfg['site_name'])}" placeholder="Ex.: Minha Loja" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="field shopify-context-field">
+        <label>Contexto da loja</label>
+        <textarea name="shopify_business_context" rows="4" placeholder="Explique o que a loja vende, publico-alvo, marcas trabalhadas, diferenciais e restricoes.">{esc(cfg['business_context'])}</textarea>
+      </div>
+      <div class="field shopify-context-field">
+        <label>Diretrizes para a IA</label>
+        <textarea name="shopify_content_guidelines" rows="4" placeholder="Ex.: usar PT-BR, evitar prometer frete gratis, nao citar marcas sem confirmacao, tom premium/descontraido etc.">{esc(cfg['content_guidelines'])}</textarea>
+      </div>
+      <button class="btn btn-primary" type="submit" style="width:100%;justify-content:center">Salvar credenciais</button>
+    </form>
+    """
+
+
+@app.route("/shopify")
+def shopify_page():
+    cfg = _shopify_config_state()
+    queue_payload = _shopify_queue_payload(limit=80)
+    cfg_json = _json_mod.dumps(cfg, ensure_ascii=False)
+    queue_json = _json_mod.dumps(queue_payload, ensure_ascii=False)
+    default_provider = _shopify_default_provider()
+    provider_options = "".join(
+        f'<option value="{esc(k)}" {"selected" if k == default_provider else ""}>{esc(k)}</option>'
+        for k in AI_PROVIDERS
+    )
+    status_badge = (
+        '<span class="badge badge-low">Configurado</span>'
+        if cfg["ready"] else
+        '<span class="badge badge-high">Pendente</span>'
+    )
+    body = f"""
+<div class="section-head" style="margin-bottom:18px">
+  <div>
+    <h1>Shopify SEO</h1>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    {status_badge}
+    <a class="btn btn-ghost btn-sm" href="/shopify/credentials">Credenciais</a>
+    <button class="btn btn-ghost btn-sm" type="button" onclick="testShopify()">Testar conexão</button>
+    <button class="btn btn-ghost btn-sm" type="button" onclick="loadQueue()">Atualizar fila</button>
+  </div>
+</div>
+
+<div class="shopify-overview">
+  <div class="shopify-overview-main">
+    <span class="shopify-overview-label">Loja conectada</span>
+    <strong>{esc(cfg['store_domain'] or 'Shopify pendente')}</strong>
+    <span>{esc(cfg['public_base_url'] or 'Configure a URL pública da loja')}</span>
+  </div>
+  <div class="shopify-overview-step">
+    <span>1</span>
+    <strong>Auditar</strong>
+    <small>Encontre metadados ausentes, curtos ou duplicados.</small>
+  </div>
+  <div class="shopify-overview-step">
+    <span>2</span>
+    <strong>Gerar</strong>
+    <small>Crie sugestões com IA e envie para revisão.</small>
+  </div>
+  <div class="shopify-overview-step">
+    <span>3</span>
+    <strong>Publicar</strong>
+    <small>Aplique somente itens aprovados.</small>
+  </div>
+</div>
+
+<div class="shopify-operation-grid">
+  <section class="panel shopify-panel">
+    <div class="panel-head"><h2 class="panel-title">Operação</h2></div>
+    <form id="shopify-action-form">
+      <div class="field">
+        <label>Recurso</label>
+        <select name="resource">
+          <option value="all">Produtos + coleções</option>
+          <option value="products">Produtos</option>
+          <option value="collections">Coleções</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Limite</label>
+        <input name="limit" type="number" min="1" max="500" value="20">
+      </div>
+      <div class="field">
+        <label>Provedor</label>
+        <select name="provider">{provider_options}</select>
+      </div>
+      <div class="field">
+        <label>Filtro Shopify</label>
+        <input name="query" value="" placeholder="status:active">
+      </div>
+      <div class="field">
+        <label>URLs</label>
+        <input name="urls" value="" placeholder="/products/produto /collections/categoria">
+      </div>
+      <label class="check-label" style="margin-bottom:10px">
+        <input type="checkbox" name="force"> Gerar para itens sem alerta
+      </label>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <button class="btn shopify-audit-action" id="shopify-audit-btn" type="button" onclick="runShopifyAudit()">Auditar</button>
+        <button class="btn btn-primary" id="shopify-generate-btn" type="button" onclick="startShopifyGenerate()">Gerar sugestões</button>
+      </div>
+    </form>
+  </section>
+</div>
+
+<section class="panel shopify-workflow" style="margin-top:20px">
+  <div class="workflow-head">
+    <div>
+      <h2 class="panel-title">Andamento</h2>
+      <p id="workflow-message" class="workflow-message">Pronto para auditar ou gerar sugestões.</p>
+    </div>
+    <span id="workflow-status" class="workflow-status status-muted">Pronto</span>
+  </div>
+  <div class="workflow-progress"><span id="workflow-progress-bar"></span></div>
+  <div class="workflow-meta">
+    <span id="workflow-progress-label">Nenhuma operação em execução</span>
+    <span id="workflow-progress-count">0%</span>
+  </div>
+  <div class="workflow-timeline">
+    <div class="workflow-step is-current" data-step="audit"><span>1</span><strong>Auditoria</strong><small id="step-audit-text">Aguardando</small></div>
+    <div class="workflow-step" data-step="generate"><span>2</span><strong>Sugestões</strong><small id="step-generate-text">Aguardando</small></div>
+    <div class="workflow-step" data-step="review"><span>3</span><strong>Revisão</strong><small id="step-review-text">Aguardando</small></div>
+    <div class="workflow-step" data-step="publish"><span>4</span><strong>Publicação</strong><small id="step-publish-text">Aguardando</small></div>
+  </div>
+</section>
+
+<section class="panel shopify-workspace" style="margin-top:20px">
+  <div class="shopify-tabs" role="tablist">
+    <button class="shopify-tab active" type="button" onclick="setShopifyTab('audit')">Auditoria</button>
+    <button class="shopify-tab" type="button" onclick="setShopifyTab('queue')">Sugestões</button>
+    <button class="shopify-tab" type="button" onclick="setShopifyTab('publish')">Publicação</button>
+    <button class="shopify-tab" type="button" onclick="setShopifyTab('log')">Detalhes técnicos</button>
+  </div>
+
+  <div id="shopify-tab-audit" class="shopify-tab-panel active">
+    <div class="panel-head">
+      <h2 class="panel-title">Auditoria</h2>
+      <span class="muted" id="audit-summary"></span>
+    </div>
+    <div class="audit-summary-grid" id="audit-summary-cards">
+      <div><strong id="audit-total">0</strong><span>Total auditado</span></div>
+      <div><strong id="audit-needs">0</strong><span>Com alerta</span></div>
+      <div><strong id="audit-high">0</strong><span>Prioridade alta</span></div>
+      <div><strong id="audit-medium">0</strong><span>Prioridade média</span></div>
+    </div>
+    <div id="audit-results" class="shopify-empty">Sem resultados.</div>
+  </div>
+
+  <div id="shopify-tab-queue" class="shopify-tab-panel">
+    <div class="panel-head">
+      <h2 class="panel-title">Sugestões para revisar</h2>
+      <span class="muted"><span id="shopify-selected-count">0</span> selecionada(s)</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:34px"><input type="checkbox" id="select-all-shopify" onchange="toggleAllShopify(this)"></th>
+            <th>Página</th>
+            <th>Status</th>
+            <th>Title SEO sugerido</th>
+            <th>Meta description sugerida</th>
+            <th>Descrição Shopify sugerida</th>
+          </tr>
+        </thead>
+        <tbody id="shopify-queue-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div id="shopify-tab-publish" class="shopify-tab-panel">
+    <div class="publish-grid">
+      <div class="publish-summary">
+        <h2 class="panel-title">Publicação</h2>
+        <div class="publish-stats">
+          <div><strong id="publish-pending">0</strong><span>Em revisão</span></div>
+          <div><strong id="publish-approved">0</strong><span>Aprovadas</span></div>
+          <div><strong id="publish-published">0</strong><span>Publicadas</span></div>
+          <div><strong id="publish-errors">0</strong><span>Com erro</span></div>
+        </div>
+      </div>
+      <div class="publish-actions">
+        <div class="publish-note"><strong id="publish-selected-count">0</strong><span> item(ns) selecionado(s)</span></div>
+        <button class="btn btn-ghost" type="button" onclick="approveSelected()">Aprovar selecionadas</button>
+        <button class="btn btn-ghost" type="button" onclick="dryRunSelected()">Testar publicação</button>
+        <button class="btn btn-primary" type="button" onclick="publishSelected()">Publicar aprovadas</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="shopify-tab-log" class="shopify-tab-panel">
+    <div class="panel-head">
+      <h2 class="panel-title">Detalhes técnicos</h2>
+      <span class="muted" id="queue-file"></span>
+    </div>
+    <pre id="shopify-job-output" class="output technical-output">Pronto.</pre>
+  </div>
+</section>
+
+<style>
+.shopify-overview{{display:grid;grid-template-columns:minmax(280px,1.4fr) repeat(3,minmax(160px,.7fr));gap:12px;margin-bottom:18px}}
+.shopify-overview-main,.shopify-overview-step{{border:1px solid var(--line);border-radius:8px;background:#fff;padding:14px 16px;box-shadow:var(--shadow-sm)}}
+.shopify-overview-label{{display:block;font-size:10px;font-weight:800;text-transform:uppercase;color:var(--muted);margin-bottom:4px}}
+.shopify-overview-main strong{{display:block;font-size:18px;color:var(--ink);margin-bottom:3px}}
+.shopify-overview-main span:last-child{{font-size:12px;color:var(--muted);word-break:break-word}}
+.shopify-overview-step{{display:grid;grid-template-columns:34px 1fr;column-gap:10px;align-items:center}}
+.shopify-overview-step span{{grid-row:1/3;width:30px;height:30px;border-radius:999px;background:var(--brand-light);color:var(--brand);display:flex;align-items:center;justify-content:center;font-weight:800;border:1px solid var(--brand-mid)}}
+.shopify-overview-step strong{{font-size:13px;color:var(--ink);line-height:1.2}}
+.shopify-overview-step small{{font-size:11px;color:var(--muted);line-height:1.35}}
+.shopify-operation-grid{{display:grid;grid-template-columns:minmax(520px,1fr);gap:16px;align-items:stretch}}
+.shopify-panel{{min-height:100%;padding:20px!important}}
+.shopify-panel .panel-head{{margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--line-light)}}
+.shopify-panel .field{{margin-bottom:12px}}
+.shopify-panel label{{font-size:11px;font-weight:800;color:#334155;text-transform:uppercase;letter-spacing:.04em}}
+.shopify-panel input,.shopify-panel select{{min-height:38px}}
+#shopify-action-form{{display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:0 14px;align-items:end}}
+#shopify-action-form .field:nth-of-type(5){{grid-column:span 2}}
+#shopify-action-form > label{{grid-column:1/-1;align-self:center;margin:2px 0 12px!important;text-transform:none;letter-spacing:0;font-size:12px;color:var(--ink)}}
+#shopify-action-form > div:last-child{{grid-column:1/-1}}
+.shopify-panel .btn{{min-height:38px}}
+.shopify-audit-action{{background:#fff;color:var(--brand);border:1px solid var(--brand);font-weight:800;justify-content:center}}
+.shopify-audit-action:hover{{background:var(--brand-light);color:var(--brand);text-decoration:none}}
+.shopify-audit-action:disabled{{opacity:.6;cursor:not-allowed}}
+.shopify-empty{{padding:18px;text-align:center;color:var(--muted);border:1px dashed var(--line);border-radius:8px}}
+.shopify-diff{{font-size:12px;line-height:1.45;color:var(--muted);max-width:none;white-space:normal;overflow-wrap:anywhere}}
+.shopify-diff strong{{display:block;color:var(--ink);font-size:13px;margin-bottom:4px}}
+.shopify-path{{font-size:12px;color:var(--muted);word-break:break-word}}
+.audit-summary-grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px}}
+.audit-summary-grid div{{border:1px solid var(--line);border-radius:8px;padding:12px;background:#fff}}
+.audit-summary-grid strong{{display:block;font-size:24px;line-height:1;color:var(--ink)}}
+.audit-summary-grid span{{font-size:11px;color:var(--muted)}}
+.audit-list{{display:flex;flex-direction:column;gap:10px}}
+.audit-card{{border:1px solid var(--line);border-radius:8px;background:#fff;padding:14px 16px;display:grid;grid-template-columns:minmax(220px,1.1fr) minmax(280px,1.6fr) minmax(190px,.8fr);gap:16px;align-items:start}}
+.audit-card-title{{font-size:14px;font-weight:800;color:var(--ink);line-height:1.35;margin-bottom:4px}}
+.audit-card-path{{font-size:12px;color:var(--muted);word-break:break-word}}
+.audit-card-meta{{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}}
+.audit-badge{{display:inline-flex;align-items:center;border-radius:999px;padding:3px 8px;font-size:11px;font-weight:700;line-height:1;border:1px solid transparent}}
+.audit-high{{background:#fef2f2;color:#991b1b;border-color:#fecaca}}
+.audit-medium{{background:#fffbeb;color:#92400e;border-color:#fde68a}}
+.audit-low{{background:#eff6ff;color:#1d4ed8;border-color:#bfdbfe}}
+.audit-ok{{background:#f0fdf4;color:#166534;border-color:#bbf7d0}}
+.audit-problems{{display:flex;flex-direction:column;gap:7px}}
+.audit-problem{{display:grid;grid-template-columns:110px 1fr;gap:10px;padding:8px 0;border-bottom:1px solid var(--line-light)}}
+.audit-problem:last-child{{border-bottom:0}}
+.audit-problem-field{{font-size:11px;font-weight:800;color:var(--muted);text-transform:uppercase}}
+.audit-problem-title{{font-size:13px;font-weight:800;color:var(--ink);margin-bottom:2px}}
+.audit-problem-detail{{font-size:12px;color:var(--muted);line-height:1.45}}
+.audit-metrics{{display:grid;gap:8px}}
+.audit-metric{{border:1px solid var(--line-light);border-radius:8px;padding:8px 10px;background:#f8fafc}}
+.audit-metric span{{display:block;font-size:10px;text-transform:uppercase;font-weight:800;color:var(--muted);margin-bottom:2px}}
+.audit-metric strong{{font-size:13px;color:var(--ink)}}
+.status-warn{{background:#fffbeb;color:#92400e}}
+.status-ok{{background:#f0fdf4;color:#166534}}
+.status-info{{background:#eff6ff;color:#1d4ed8}}
+.status-bad{{background:#fef2f2;color:#991b1b}}
+.status-muted{{background:#f1f5f9;color:#475569}}
+.shopify-workflow{{padding:20px!important}}
+.workflow-head{{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:14px}}
+.workflow-message{{margin:4px 0 0;color:var(--muted);font-size:13px;line-height:1.45}}
+.workflow-status{{border-radius:999px;padding:6px 10px;font-size:11px;font-weight:800;text-transform:uppercase;white-space:nowrap}}
+.workflow-progress{{height:10px;border-radius:999px;background:#eef2f7;overflow:hidden;border:1px solid var(--line-light)}}
+.workflow-progress span{{display:block;height:100%;width:0;background:linear-gradient(90deg,#8f1d2c,#be123c);transition:width .35s ease}}
+.workflow-meta{{display:flex;justify-content:space-between;gap:12px;margin-top:8px;color:var(--muted);font-size:12px}}
+.workflow-timeline{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:16px}}
+.workflow-step{{border:1px solid var(--line);border-radius:8px;background:#fff;padding:12px;display:grid;grid-template-columns:30px 1fr;gap:8px;align-items:center;min-height:72px}}
+.workflow-step span{{grid-row:1/3;width:28px;height:28px;border-radius:999px;background:#f1f5f9;color:#475569;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:12px}}
+.workflow-step strong{{font-size:13px;color:var(--ink);line-height:1.2}}
+.workflow-step small{{font-size:11px;color:var(--muted);line-height:1.25}}
+.workflow-step.is-current{{border-color:var(--brand-mid);background:var(--brand-light)}}
+.workflow-step.is-current span{{background:var(--brand);color:#fff}}
+.workflow-step.is-done{{border-color:#bbf7d0;background:#f0fdf4}}
+.workflow-step.is-done span{{background:#16a34a;color:#fff}}
+.workflow-step.is-error{{border-color:#fecaca;background:#fef2f2}}
+.workflow-step.is-error span{{background:#dc2626;color:#fff}}
+.shopify-workspace{{padding:0!important;overflow:hidden}}
+.shopify-tabs{{display:flex;gap:4px;border-bottom:1px solid var(--line);padding:10px 12px 0;background:#f8fafc;overflow:auto}}
+.shopify-tab{{border:0;background:transparent;color:var(--muted);font-weight:800;font-size:13px;padding:11px 14px;border-radius:8px 8px 0 0;cursor:pointer;white-space:nowrap}}
+.shopify-tab:hover{{background:#eef2f7;color:var(--ink)}}
+.shopify-tab.active{{background:#fff;color:var(--brand);box-shadow:0 -1px 0 var(--line),1px 0 0 var(--line),-1px 0 0 var(--line)}}
+.shopify-tab-panel{{display:none;padding:20px}}
+.shopify-tab-panel.active{{display:block}}
+.publish-grid{{display:grid;grid-template-columns:1.4fr .8fr;gap:18px;align-items:start}}
+.publish-stats{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px}}
+.publish-stats div,.publish-note{{border:1px solid var(--line);border-radius:8px;background:#fff;padding:12px}}
+.publish-stats strong,.publish-note strong{{display:block;font-size:24px;line-height:1;color:var(--ink);margin-bottom:4px}}
+.publish-stats span,.publish-note span{{font-size:11px;color:var(--muted);font-weight:700}}
+.publish-actions{{display:grid;gap:10px}}
+.publish-actions .btn{{justify-content:center}}
+.technical-output{{min-height:180px;max-height:360px;overflow:auto}}
+@media(max-width:1180px){{.shopify-overview{{grid-template-columns:1fr 1fr}}.shopify-operation-grid{{grid-template-columns:1fr}}#shopify-action-form{{grid-template-columns:1fr 1fr}}}}
+@media(max-width:980px){{.audit-card{{grid-template-columns:1fr}}.audit-summary-grid,.workflow-timeline,.publish-stats{{grid-template-columns:repeat(2,1fr)}}.publish-grid{{grid-template-columns:1fr}}}}
+@media(max-width:680px){{.shopify-overview,#shopify-action-form,.workflow-timeline,.publish-stats{{grid-template-columns:1fr}}#shopify-action-form .field:nth-of-type(5),#shopify-action-form > label,#shopify-action-form > div:last-child{{grid-column:auto}}.workflow-head,.workflow-meta{{flex-direction:column;align-items:flex-start}}}}
+</style>
+
+<script>
+const SHOPIFY_CONFIG = {cfg_json};
+let SHOPIFY_QUEUE = {queue_json};
+let selectedShopify = new Set();
+
+function h(value) {{
+  return String(value || '').replace(/[&<>"']/g, function(ch) {{
+    return {{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[ch];
+  }});
+}}
+function formPayload() {{
+  const fd = new FormData(document.getElementById('shopify-action-form'));
+  return {{
+    resource: fd.get('resource') || 'all',
+    limit: Number(fd.get('limit') || 20),
+    provider: fd.get('provider') || 'gemini',
+    query: fd.get('query') || '',
+    urls: fd.get('urls') || '',
+    force: fd.get('force') === 'on'
+  }};
+}}
+function selectedPaths() {{
+  const rows = (SHOPIFY_QUEUE.rows || []).filter(r => selectedShopify.has(r.key));
+  return rows.map(r => r.path).filter(Boolean);
+}}
+function setJob(text) {{
+  document.getElementById('shopify-job-output').textContent = text || '';
+}}
+function setGenerateBusy(isBusy) {{
+  const btn = document.getElementById('shopify-generate-btn');
+  if (!btn) return;
+  btn.disabled = !!isBusy;
+  btn.textContent = isBusy ? 'Gerando...' : 'Gerar sugestões';
+}}
+function setAuditBusy(isBusy) {{
+  const btn = document.getElementById('shopify-audit-btn');
+  if (!btn) return;
+  btn.disabled = !!isBusy;
+  btn.textContent = isBusy ? 'Auditando...' : 'Auditar';
+}}
+function setShopifyTab(name) {{
+  document.querySelectorAll('.shopify-tab').forEach(function(btn) {{
+    btn.classList.toggle('active', btn.textContent.toLowerCase().indexOf(name === 'queue' ? 'sugest' : name === 'publish' ? 'publica' : name === 'log' ? 'detalhes' : 'auditoria') >= 0);
+  }});
+  document.querySelectorAll('.shopify-tab-panel').forEach(function(panel) {{
+    panel.classList.toggle('active', panel.id === 'shopify-tab-' + name);
+  }});
+}}
+function setWorkflowState(opts) {{
+  opts = opts || {{}};
+  const phase = opts.phase || 'audit';
+  const status = opts.status || 'idle';
+  const current = Number(opts.current || 0);
+  const total = Number(opts.total || 0);
+  const percent = total > 0 ? Math.min(100, Math.round((current / total) * 100)) : Number(opts.percent || 0);
+  const message = opts.message || 'Pronto para auditar ou gerar sugestões.';
+  const label = opts.label || (total > 0 ? `${{current}} de ${{total}} item(ns)` : 'Nenhuma operação em execução');
+  const statusLabel = status === 'running' ? 'Em execução' : status === 'completed' ? 'Concluído' : status === 'error' ? 'Erro' : 'Pronto';
+  const statusClass = status === 'running' ? 'status-info' : status === 'completed' ? 'status-ok' : status === 'error' ? 'status-bad' : 'status-muted';
+  const messageEl = document.getElementById('workflow-message');
+  const statusEl = document.getElementById('workflow-status');
+  const bar = document.getElementById('workflow-progress-bar');
+  const count = document.getElementById('workflow-progress-count');
+  const labelEl = document.getElementById('workflow-progress-label');
+  if (messageEl) messageEl.textContent = message;
+  if (statusEl) {{
+    statusEl.textContent = statusLabel;
+    statusEl.className = 'workflow-status ' + statusClass;
+  }}
+  if (bar) bar.style.width = Math.max(0, Math.min(100, percent)) + '%';
+  if (count) count.textContent = Math.max(0, Math.min(100, percent)) + '%';
+  if (labelEl) labelEl.textContent = label;
+  const order = ['audit', 'generate', 'review', 'publish'];
+  const phaseIndex = Math.max(0, order.indexOf(phase));
+  document.querySelectorAll('.workflow-step').forEach(function(step) {{
+    const stepName = step.dataset.step;
+    const idx = order.indexOf(stepName);
+    step.classList.toggle('is-done', status !== 'error' && idx >= 0 && idx < phaseIndex);
+    step.classList.toggle('is-current', idx === phaseIndex && status !== 'error');
+    step.classList.toggle('is-error', status === 'error' && idx === phaseIndex);
+  }});
+}}
+function updateSelectionBadges() {{
+  const count = selectedShopify.size;
+  ['shopify-selected-count', 'publish-selected-count'].forEach(function(id) {{
+    const el = document.getElementById(id);
+    if (el) el.textContent = count;
+  }});
+}}
+function protectShopifyCredentialFields() {{
+  const fields = [
+    document.getElementById('shopify-client-id-input'),
+    document.getElementById('shopify-client-secret-input')
+  ].filter(Boolean);
+  fields.forEach(function(el) {{
+    el.dataset.manualEdit = '0';
+    ['keydown', 'paste', 'drop', 'compositionstart'].forEach(function(eventName) {{
+      el.addEventListener(eventName, function() {{ el.dataset.manualEdit = '1'; }});
+    }});
+  }});
+  function clearAutofill() {{
+    fields.forEach(function(el) {{
+      if (el.dataset.manualEdit !== '1' && el.value) el.value = '';
+      el.defaultValue = '';
+    }});
+  }}
+  clearAutofill();
+  [100, 500, 1200, 2500].forEach(function(ms) {{ setTimeout(clearAutofill, ms); }});
+}}
+document.addEventListener('DOMContentLoaded', protectShopifyCredentialFields);
+function renderQueue(data) {{
+  SHOPIFY_QUEUE = data || {{rows:[], counts:{{}}}};
+  const c = SHOPIFY_QUEUE.counts || {{}};
+  const legacyKpis = {{
+    'sq-pending': c.pending_review || 0,
+    'sq-approved': c.approved || 0,
+    'sq-published': c.published || 0,
+    'sq-error': c.error || 0
+  }};
+  Object.keys(legacyKpis).forEach(function(id) {{
+    const el = document.getElementById(id);
+    if (el) el.textContent = legacyKpis[id];
+  }});
+  const pubMap = {{
+    'publish-pending': c.pending_review || 0,
+    'publish-approved': c.approved || 0,
+    'publish-published': c.published || 0,
+    'publish-errors': c.error || 0
+  }};
+  Object.keys(pubMap).forEach(function(id) {{
+    const el = document.getElementById(id);
+    if (el) el.textContent = pubMap[id];
+  }});
+  document.getElementById('queue-file').textContent = SHOPIFY_QUEUE.queue_file || '';
+  updateSelectionBadges();
+  const body = document.getElementById('shopify-queue-body');
+  const rows = SHOPIFY_QUEUE.rows || [];
+  if (!rows.length) {{
+    body.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:22px">Fila vazia.</td></tr>';
+    return;
+  }}
+  body.innerHTML = rows.map(function(r) {{
+    const checked = selectedShopify.has(r.key) ? 'checked' : '';
+    const desc = r.proposal_description || r.current_description || '';
+    const content = r.proposal_content || '';
+    const statusClass = 'status-' + (r.status_class || 'muted');
+    const contentBadge = r.updates_content ? '<span class="badge status-info" style="margin-bottom:6px">Atualiza descrição</span>' : '<span class="badge status-muted" style="margin-bottom:6px">Mantém descrição atual</span>';
+    return `<tr>
+      <td><input type="checkbox" data-key="${{h(r.key)}}" onchange="toggleShopifyRow(this)" ${{checked}}></td>
+      <td><strong>${{h(r.title || r.resource_label || r.resource_type)}}</strong><div class="shopify-path">${{h(r.resource_label || r.resource_type)}} - ${{h(r.path)}}</div><div class="muted" style="font-size:11px">${{h(r.provider)}}</div></td>
+      <td><span class="badge ${{statusClass}}">${{h(r.status_label || r.status)}}</span></td>
+      <td><div class="shopify-diff"><strong>${{h(r.proposal_title || '(vazio)')}}</strong><span>${{h(r.current_title || '(atual vazio)')}}</span></div></td>
+      <td><div class="shopify-diff">${{h(desc)}}</div></td>
+      <td><div class="shopify-diff">${{contentBadge}}<span>${{h(content) || '(sem sugestão)'}}</span><div class="muted" style="font-size:11px;margin-top:5px">Atual: ${{h(r.current_content_words || 0)}} palavras</div></div></td>
+    </tr>`;
+  }}).join('');
+}}
+function renderAudit(data) {{
+  const rows = data.rows || [];
+  document.getElementById('audit-summary').textContent = `${{data.total || 0}} item(ns), ${{data.needs || 0}} com alerta`;
+  const box = document.getElementById('audit-results');
+  if (!rows.length) {{
+    box.innerHTML = '<div class="shopify-empty">Sem alertas.</div>';
+    return;
+  }}
+  box.innerHTML = rows.map(function(r) {{
+    const problems = (r.issues || []).concat(r.warnings || []).join('; ');
+    return `<div style="padding:10px 0;border-bottom:1px solid var(--line-light)">
+      <strong>${{h(r.resource_type)}} · ${{h(r.path)}}</strong>
+      <div class="muted" style="font-size:12px;margin-top:3px">${{h(problems)}}</div>
+    </div>`;
+  }}).join('');
+}}
+function renderAudit(data) {{
+  const rows = data.rows || [];
+  const summary = data.summary || {{}};
+  document.getElementById('audit-total').textContent = data.total || 0;
+  document.getElementById('audit-needs').textContent = data.needs || 0;
+  document.getElementById('audit-high').textContent = summary.high || 0;
+  document.getElementById('audit-medium').textContent = summary.medium || 0;
+  document.getElementById('audit-summary').textContent = `${{data.total || 0}} item(ns) auditado(s), ${{data.needs || 0}} com alerta`;
+  const box = document.getElementById('audit-results');
+  if (!rows.length) {{
+    box.className = 'shopify-empty';
+    box.innerHTML = 'Nenhum alerta encontrado.';
+    return;
+  }}
+  box.className = 'audit-list';
+  box.innerHTML = rows.map(function(r) {{
+    const priority = r.priority || {{level:'low', label:'Baixa'}};
+    const problems = r.problems || [];
+    const problemHtml = problems.map(function(p) {{
+      return `<div class="audit-problem">
+        <div class="audit-problem-field">${{h(p.field)}}</div>
+        <div>
+          <div class="audit-problem-title">${{h(p.title)}}</div>
+          <div class="audit-problem-detail">${{h(p.detail)}}</div>
+        </div>
+      </div>`;
+    }}).join('');
+    const titleValue = r.seo_title ? `${{r.seo_title_length}} caracteres` : 'ausente';
+    const descValue = r.seo_description ? `${{r.seo_description_length}} caracteres` : 'ausente';
+    return `<article class="audit-card">
+      <div>
+        <div class="audit-card-title">${{h(r.title || r.resource_label || 'Página Shopify')}}</div>
+        <div class="audit-card-path">${{h(r.resource_label || r.resource_type)}} - ${{h(r.path)}}</div>
+        <div class="audit-card-meta">
+          <span class="audit-badge audit-${{h(priority.level)}}">Prioridade ${{h(priority.label)}}</span>
+          <span class="audit-badge audit-low">${{problems.length}} alerta(s)</span>
+        </div>
+      </div>
+      <div class="audit-problems">${{problemHtml}}</div>
+      <div class="audit-metrics">
+        <div class="audit-metric"><span>Title SEO</span><strong>${{h(titleValue)}} - ${{h(r.title_status)}}</strong></div>
+        <div class="audit-metric"><span>Meta description</span><strong>${{h(descValue)}} - ${{h(r.description_status)}}</strong></div>
+        <div class="audit-metric"><span>Conteúdo</span><strong>${{h(r.content_words)}} palavras</strong></div>
+      </div>
+    </article>`;
+  }}).join('');
+}}
+async function postJSON(url, payload) {{
+  const res = await fetch(url, {{
+    method:'POST',
+    headers:{{'Content-Type':'application/json'}},
+    body:JSON.stringify(payload || {{}})
+  }});
+  const data = await res.json();
+  if (!res.ok || data.error) throw new Error(data.error || 'Falha');
+  return data;
+}}
+async function saveShopifySettings(event) {{
+  event.preventDefault();
+  const fd = new FormData(event.target);
+  const payload = Object.fromEntries(fd.entries());
+  delete payload.shopify_autofill_decoy_user;
+  delete payload.shopify_autofill_decoy_pass;
+  const clientIdEl = document.getElementById('shopify-client-id-input');
+  const clientSecretEl = document.getElementById('shopify-client-secret-input');
+  if (clientIdEl && clientIdEl.dataset.manualEdit !== '1') delete payload.shopify_client_id;
+  if (clientSecretEl && clientSecretEl.dataset.manualEdit !== '1') delete payload.shopify_client_secret;
+  try {{
+    await postJSON('/shopify/settings', payload);
+    showToast('Credenciais salvas', 'success');
+  }} catch (err) {{
+    showToast(err.message, 'error');
+  }}
+}}
+async function testShopify() {{
+    setJob('Testando conexão...');
+  try {{
+    const data = await postJSON('/shopify/test', {{}});
+    setJob(data.message || 'OK');
+    showToast('Shopify conectado', 'success');
+  }} catch (err) {{
+    setJob(err.message);
+    showToast(err.message, 'error');
+  }}
+}}
+async function runShopifyAudit() {{
+  setShopifyTab('audit');
+  setAuditBusy(true);
+  setWorkflowState({{phase:'audit', status:'running', percent:18, message:'Lendo dados da Shopify para auditoria...', label:'Buscando produtos e coleções'}});
+  setJob('Auditando Shopify...');
+  try {{
+    const data = await postJSON('/shopify/audit', formPayload());
+    renderAudit(data);
+    setWorkflowState({{phase:'audit', status:'completed', percent:100, message:`Auditoria concluída: ${{data.needs || 0}} item(ns) com alerta.`, label:`${{data.total || 0}} item(ns) auditado(s)`}});
+    setJob('Auditoria concluída.');
+  }} catch (err) {{
+    setWorkflowState({{phase:'audit', status:'error', percent:100, message:err.message, label:'Auditoria falhou'}});
+    setJob(err.message);
+    showToast(err.message, 'error');
+  }} finally {{
+    setAuditBusy(false);
+  }}
+}}
+async function startShopifyGenerate() {{
+  setShopifyTab('queue');
+  setWorkflowState({{phase:'generate', status:'running', percent:5, message:'Preparando geração de sugestões...', label:'Iniciando job'}});
+  setGenerateBusy(true);
+  setJob('Iniciando geracao...');
+  try {{
+    const data = await postJSON('/shopify/generate/start', formPayload());
+    pollShopifyJob(data.job_id);
+  }} catch (err) {{
+    setGenerateBusy(false);
+    setJob(err.message);
+    showToast(err.message, 'error');
+  }}
+}}
+async function pollShopifyJob(jobId) {{
+  const res = await fetch('/shopify/job/' + jobId);
+  const data = await res.json();
+  setJob(data.output || '');
+  if (data.status === 'running') {{
+    const total = Number(data.total || 0);
+    const current = Number(data.current || 0);
+    setWorkflowState({{
+      phase: data.phase || 'generate',
+      status: 'running',
+      current: current,
+      total: total,
+      percent: total ? undefined : 25,
+      message: data.message || 'Gerando sugestões com IA...',
+      label: total ? `${{current}} de ${{total}} sugestão(ões) salvas` : 'Processando'
+    }});
+  }}
+  if (data.status === 'running') {{
+    setTimeout(function() {{ pollShopifyJob(jobId); }}, 1800);
+  }} else {{
+    setGenerateBusy(false);
+    await loadQueue();
+    const errorLine = String(data.output || '').split(String.fromCharCode(10)).find(line => line.indexOf('Erro:') === 0);
+    if (data.status === 'completed') {{
+      setWorkflowState({{phase:'review', status:'completed', current:data.current || 0, total:data.total || data.current || 1, message:data.message || 'Sugestões prontas para revisão.', label:'Revise e aprove antes de publicar'}});
+      setShopifyTab('queue');
+    }} else {{
+      setWorkflowState({{phase:data.phase || 'generate', status:'error', percent:100, message:errorLine ? errorLine.replace('Erro:', '').trim() : 'Geração falhou', label:'Ver detalhes técnicos'}});
+      setShopifyTab('log');
+    }}
+    showToast(data.status === 'completed' ? 'Geração concluída' : (errorLine ? errorLine.replace('Erro:', '').trim() : 'Geração falhou'), data.status === 'completed' ? 'success' : 'error');
+  }}
+}}
+async function loadQueue() {{
+  const res = await fetch('/shopify/queue');
+  renderQueue(await res.json());
+}}
+function toggleShopifyRow(input) {{
+  if (input.checked) selectedShopify.add(input.dataset.key);
+  else selectedShopify.delete(input.dataset.key);
+  updateSelectionBadges();
+}}
+function toggleAllShopify(input) {{
+  selectedShopify = new Set();
+  if (input.checked) (SHOPIFY_QUEUE.rows || []).forEach(r => selectedShopify.add(r.key));
+  renderQueue(SHOPIFY_QUEUE);
+  updateSelectionBadges();
+}}
+async function approveSelected() {{
+  setShopifyTab('publish');
+  setWorkflowState({{phase:'review', status:'running', percent:35, message:'Aprovando itens selecionados...', label:`${{selectedShopify.size || 'todos os'}} item(ns)`}});
+  try {{
+    const data = await postJSON('/shopify/approve', {{keys:Array.from(selectedShopify)}});
+    renderQueue(data.queue);
+    setWorkflowState({{phase:'review', status:'completed', percent:100, message:`${{data.approved || 0}} item(ns) aprovado(s).`, label:'Pronto para testar ou publicar'}});
+    showToast('Aprovado', 'success');
+  }} catch (err) {{
+    setWorkflowState({{phase:'review', status:'error', percent:100, message:err.message, label:'Aprovação falhou'}});
+    showToast(err.message, 'error');
+  }}
+}}
+async function dryRunSelected() {{
+  setShopifyTab('publish');
+  setWorkflowState({{phase:'publish', status:'running', percent:35, message:'Testando publicação sem alterar a Shopify...', label:'Dry run'}});
+  try {{
+    const data = await postJSON('/shopify/apply', {{apply:false, paths:selectedPaths()}});
+    setJob((data.events || []).map(e => `${{e.status}} ${{e.url || e.handle}}: ${{e.seo_title || ''}}`).join('\\n') || 'Nada aprovado.');
+    setWorkflowState({{phase:'publish', status:'completed', percent:100, message:'Teste concluído. Nenhuma alteração foi publicada.', label:`${{(data.events || []).length}} evento(s)`}});
+  }} catch (err) {{
+    setWorkflowState({{phase:'publish', status:'error', percent:100, message:err.message, label:'Teste falhou'}});
+    showToast(err.message, 'error');
+  }}
+}}
+async function publishSelected() {{
+  if (!confirm('Publicar os itens aprovados na Shopify?')) return;
+  setShopifyTab('publish');
+  setWorkflowState({{phase:'publish', status:'running', percent:45, message:'Publicando itens aprovados na Shopify...', label:'Enviando alterações'}});
+  try {{
+    const data = await postJSON('/shopify/apply', {{apply:true, paths:selectedPaths()}});
+    renderQueue(data.queue);
+    setJob((data.events || []).map(e => `${{e.status}} ${{e.url || e.handle}}: ${{e.seo_title || ''}}`).join('\\n'));
+    setWorkflowState({{phase:'publish', status:'completed', percent:100, message:'Publicação concluída.', label:`${{(data.events || []).length}} evento(s)`}});
+    showToast('Publicacao concluida', 'success');
+  }} catch (err) {{
+    setWorkflowState({{phase:'publish', status:'error', percent:100, message:err.message, label:'Publicação falhou'}});
+    showToast(err.message, 'error');
+  }}
+}}
+renderQueue(SHOPIFY_QUEUE);
+</script>
+"""
+    return page_shell("Shopify SEO", body)
+
+
+@app.route("/shopify/credentials")
+def shopify_credentials_page():
+    cfg = _shopify_config_state()
+    form_html = _shopify_credentials_form(cfg)
+    body = f"""
+<div class="section-head" style="margin-bottom:18px">
+  <div>
+    <h1>Credenciais Shopify</h1>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <a class="btn btn-ghost btn-sm" href="/shopify">Voltar ao Shopify SEO</a>
+    <button class="btn btn-ghost btn-sm" type="button" onclick="testShopifyCredentials()">Testar conexão</button>
+  </div>
+</div>
+
+<section class="panel shopify-credentials-panel">
+  <div class="panel-head">
+    <h2 class="panel-title">Configuração da loja</h2>
+  </div>
+  {form_html}
+</section>
+
+<section class="panel" style="margin-top:18px">
+  <div class="panel-head"><h2 class="panel-title">Status</h2></div>
+  <pre id="shopify-credentials-output" class="output" style="min-height:90px">Pronto.</pre>
+</section>
+
+<style>
+.shopify-credentials-panel{{max-width:760px;padding:22px!important}}
+.shopify-credentials-panel form{{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}}
+.shopify-credentials-panel .field{{margin-bottom:14px}}
+.shopify-credentials-panel label{{font-size:11px;font-weight:800;color:#334155;text-transform:uppercase;letter-spacing:.04em}}
+.shopify-credentials-panel input,.shopify-credentials-panel textarea{{min-height:40px}}
+.shopify-credentials-panel textarea{{resize:vertical;line-height:1.5}}
+.shopify-credentials-panel .field:first-of-type,
+.shopify-credentials-panel .field:nth-of-type(5),
+.shopify-credentials-panel .shopify-context-field,
+.shopify-credentials-panel button{{grid-column:1/-1}}
+@media(max-width:680px){{.shopify-credentials-panel form{{grid-template-columns:1fr}}.shopify-credentials-panel .field:first-of-type,.shopify-credentials-panel .field:nth-of-type(5),.shopify-credentials-panel .shopify-context-field,.shopify-credentials-panel button{{grid-column:auto}}}}
+</style>
+
+<script>
+function setCredentialsOutput(text) {{
+  document.getElementById('shopify-credentials-output').textContent = text || '';
+}}
+async function postJSON(url, payload) {{
+  const res = await fetch(url, {{
+    method:'POST',
+    headers:{{'Content-Type':'application/json'}},
+    body:JSON.stringify(payload || {{}})
+  }});
+  const data = await res.json();
+  if (!res.ok || data.error) throw new Error(data.error || 'Falha');
+  return data;
+}}
+function protectShopifyCredentialFields() {{
+  const fields = [
+    document.getElementById('shopify-client-id-input'),
+    document.getElementById('shopify-client-secret-input')
+  ].filter(Boolean);
+  fields.forEach(function(el) {{
+    el.dataset.manualEdit = '0';
+    ['keydown', 'paste', 'drop', 'compositionstart'].forEach(function(eventName) {{
+      el.addEventListener(eventName, function() {{ el.dataset.manualEdit = '1'; }});
+    }});
+  }});
+  function clearAutofill() {{
+    fields.forEach(function(el) {{
+      if (el.dataset.manualEdit !== '1' && el.value) el.value = '';
+      el.defaultValue = '';
+    }});
+  }}
+  clearAutofill();
+  [100, 500, 1200, 2500].forEach(function(ms) {{ setTimeout(clearAutofill, ms); }});
+}}
+async function saveShopifySettings(event) {{
+  event.preventDefault();
+  const fd = new FormData(event.target);
+  const payload = Object.fromEntries(fd.entries());
+  delete payload.shopify_autofill_decoy_user;
+  delete payload.shopify_autofill_decoy_pass;
+  const clientIdEl = document.getElementById('shopify-client-id-input');
+  const clientSecretEl = document.getElementById('shopify-client-secret-input');
+  if (clientIdEl && clientIdEl.dataset.manualEdit !== '1') delete payload.shopify_client_id;
+  if (clientSecretEl && clientSecretEl.dataset.manualEdit !== '1') delete payload.shopify_client_secret;
+  try {{
+    await postJSON('/shopify/settings', payload);
+    setCredentialsOutput('Credenciais salvas.');
+    showToast('Credenciais salvas', 'success');
+  }} catch (err) {{
+    setCredentialsOutput(err.message);
+    showToast(err.message, 'error');
+  }}
+}}
+async function testShopifyCredentials() {{
+  setCredentialsOutput('Testando conexão...');
+  try {{
+    const data = await postJSON('/shopify/test', {{}});
+    setCredentialsOutput(data.message || 'Conexão OK.');
+    showToast('Shopify conectado', 'success');
+  }} catch (err) {{
+    setCredentialsOutput(err.message);
+    showToast(err.message, 'error');
+  }}
+}}
+document.addEventListener('DOMContentLoaded', protectShopifyCredentialFields);
+</script>
+"""
+    return page_shell("Credenciais Shopify", body)
+
+
+@app.post("/shopify/settings")
+def shopify_settings_save():
+    data = request.get_json(silent=True) or {}
+    values = {
+        "SHOPIFY_STORE_DOMAIN": data.get("store_domain", ""),
+        "SHOPIFY_API_VERSION": data.get("api_version", "2026-04") or "2026-04",
+        "SHOPIFY_PUBLIC_BASE_URL": data.get("public_base_url", ""),
+        "SHOPIFY_SITE_NAME": _single_line_setting(data.get("shopify_site_name", "")),
+        "SHOPIFY_BUSINESS_CONTEXT": _single_line_setting(data.get("shopify_business_context", "")),
+        "SHOPIFY_CONTENT_GUIDELINES": _single_line_setting(data.get("shopify_content_guidelines", "")),
+    }
+    for key, value in values.items():
+        _update_env_file(key, str(value or "").strip())
+    client_id = _shopify_form_value(data, "shopify_client_id", "client_id")
+    client_secret = _shopify_form_value(data, "shopify_client_secret", "client_secret")
+    if _looks_like_browser_autofill(client_id) or _looks_like_browser_autofill(client_secret):
+        return jsonify({
+            "ok": False,
+            "error": "O navegador tentou preencher credenciais da Shopify com dados salvos. Limpe o campo e cole o ID/secret do app manualmente.",
+        }), 400
+    if client_id:
+        _update_env_file("SHOPIFY_CLIENT_ID", client_id)
+    if client_secret:
+        _update_env_file("SHOPIFY_CLIENT_SECRET", client_secret)
+    return jsonify({"ok": True, "config": _shopify_config_state()})
+
+
+@app.post("/shopify/test")
+def shopify_test_connection():
+    try:
+        shopify_seo = _shopify_mod()
+        client = shopify_seo.ShopifyGraphQLClient(shopify_seo.ShopifyCredentials.from_env())
+        items = shopify_seo.fetch_resources(client, "all", limit=1)
+        return jsonify({"ok": True, "message": f"Conexao OK. {len(items)} recurso(s) lido(s)."})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.post("/shopify/audit")
+def shopify_audit_api():
+    try:
+        data = request.get_json(silent=True) or {}
+        resource = str(data.get("resource") or "all")
+        limit = max(1, min(500, int(data.get("limit") or 20)))
+        query = str(data.get("query") or "").strip() or None
+        urls = _split_urls(data.get("urls") or "")
+        shopify_seo = _shopify_mod()
+        client = shopify_seo.ShopifyGraphQLClient(shopify_seo.ShopifyCredentials.from_env())
+        resources = shopify_seo.fetch_resources(client, resource, limit, query)
+        audited = shopify_seo.audit_resources(resources)
+        if urls:
+            audited = [row for row in audited if shopify_seo._matches_urls(row, urls)]
+        needs = [row for row in audited if row.get("needs_optimization")]
+        summary = {"high": 0, "medium": 0, "low": 0}
+        rows = []
+        for row in needs[:100]:
+            raw_messages = (row.get("issues") or []) + (row.get("warnings") or [])
+            problems = _shopify_problem_details(raw_messages)
+            priority = _shopify_priority(problems)
+            summary[priority["level"]] = summary.get(priority["level"], 0) + 1
+            rows.append({
+                "resource_type": row.get("resource_type"),
+                "resource_label": _shopify_resource_label(row.get("resource_type")),
+                "path": row.get("path"),
+                "title": row.get("title") or row.get("handle") or "",
+                "priority": priority,
+                "problems": problems,
+                "title_status": _shopify_status_pt(row.get("title_status")),
+                "description_status": _shopify_status_pt(row.get("description_status")),
+                "seo_title": row.get("seo_title") or "",
+                "seo_description": row.get("seo_description") or "",
+                "seo_title_length": len(row.get("seo_title") or ""),
+                "seo_description_length": len(row.get("seo_description") or ""),
+                "content_words": len([word for word in str(row.get("description_text") or "").split() if len(word) > 2]),
+            })
+        return jsonify({
+            "ok": True,
+            "total": len(audited),
+            "needs": len(needs),
+            "summary": summary,
+            "rows": rows,
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.post("/shopify/generate/start")
+def shopify_generate_start():
+    try:
+        job_id = _start_shopify_generate_job(request.get_json(silent=True) or {})
+        return jsonify({"ok": True, "job_id": job_id})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.get("/shopify/job/<job_id>")
+def shopify_job_status(job_id):
+    job = _get_job(job_id)
+    if not job:
+        return jsonify({"status": "missing", "output": "Job nao encontrado."}), 404
+    return jsonify({
+        "status": job.get("status"),
+        "phase": job.get("phase") or "",
+        "message": job.get("message") or "",
+        "current": int(job.get("progress_current") or 0),
+        "total": int(job.get("progress_total") or 0),
+        "output": format_job_output(job),
+    })
+
+
+@app.get("/shopify/queue")
+def shopify_queue_api():
+    return jsonify(_shopify_queue_payload(limit=120))
+
+
+@app.post("/shopify/approve")
+def shopify_approve_api():
+    try:
+        data = request.get_json(silent=True) or {}
+        keys = set(data.get("keys") or [])
+        shopify_seo = _shopify_mod()
+        changes = shopify_seo.load_queue()
+        count = 0
+        if keys:
+            for item in changes:
+                key = f"{item.get('resource_type')}:{item.get('id')}"
+                if key in keys and item.get("status") == "pending_review":
+                    item["status"] = "approved"
+                    item["approved_at"] = datetime.now(timezone.utc).isoformat()
+                    count += 1
+            shopify_seo.save_queue(changes)
+        else:
+            count, changes = shopify_seo.approve_queue(approve_all=True)
+        return jsonify({"ok": True, "approved": count, "queue": _shopify_queue_payload(limit=120)})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.post("/shopify/apply")
+def shopify_apply_api():
+    try:
+        data = request.get_json(silent=True) or {}
+        apply_real = bool(data.get("apply"))
+        paths = data.get("paths") or None
+        shopify_seo = _shopify_mod()
+        changes = shopify_seo.load_queue()
+        client = None
+        if apply_real:
+            client = shopify_seo.ShopifyGraphQLClient(shopify_seo.ShopifyCredentials.from_env())
+        updated, events = shopify_seo.apply_approved_changes(client, changes, urls_filter=paths, apply=apply_real)
+        if apply_real:
+            shopify_seo.save_queue(updated)
+            shopify_seo.append_log(events)
+        return jsonify({"ok": True, "events": events, "queue": _shopify_queue_payload(limit=120)})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
 
 
 TOOL_GROUPS = [

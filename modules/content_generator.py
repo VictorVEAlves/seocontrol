@@ -24,13 +24,14 @@ import json
 import os
 import re
 import time
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 
 import requests
 
 from config import (
-    OPENROUTER_MODEL, OPENROUTER_FALLBACK_MODELS,
+    GROQ_MODEL, OLLAMA_MODEL, OPENROUTER_MODEL, OPENROUTER_FALLBACK_MODELS,
     get_business_context, get_content_guidelines, get_default_provider,
     get_provider_api_key, get_provider_sequence, get_scoped_runtime_file,
     get_site_name, get_site_url
@@ -47,6 +48,45 @@ def _max_output_tokens() -> int:
     except Exception:
         return DEFAULT_MAX_OUTPUT_TOKENS
 
+
+def _trim_without_ellipsis(
+    value: str,
+    maximum: int,
+    min_last_space: int | None = None,
+    end_sentence: bool = True,
+) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(text) <= maximum and not end_sentence:
+        return text
+    cutoff = text if len(text) <= maximum else text[:maximum].rstrip()
+    if len(text) > maximum:
+        last_space = cutoff.rfind(" ")
+        if last_space > (min_last_space or int(maximum * 0.7)):
+            cutoff = cutoff[:last_space].rstrip()
+    cutoff = cutoff.rstrip(" ,;:-.!?")
+    bad_endings = {
+        "a", "o", "as", "os", "e", "ou", "de", "do", "da", "dos", "das",
+        "com", "para", "por", "que", "não", "nao", "n?o", "no", "na", "nos", "nas",
+        "em", "ao", "aos", "à", "às", "seu", "sua", "seus", "suas",
+    }
+    min_len = min_last_space or int(maximum * 0.7)
+    while " " in cutoff and len(cutoff) > min_len:
+        last_word = cutoff.rsplit(" ", 1)[-1].strip(" ,;:-.!?").lower()
+        last_word_ascii = "".join(
+            ch for ch in unicodedata.normalize("NFKD", last_word)
+            if not unicodedata.combining(ch)
+        )
+        if last_word not in bad_endings and last_word_ascii not in bad_endings:
+            break
+        cutoff = cutoff.rsplit(" ", 1)[0].rstrip(" ,;:-.!?")
+    if not end_sentence:
+        return cutoff[:maximum].rstrip()
+    if cutoff.endswith((".", "!", "?")):
+        return cutoff[:maximum].rstrip()
+    if len(cutoff) < maximum:
+        return cutoff + "."
+    return cutoff[: max(0, maximum - 1)].rstrip(" ,;:-.!?") + "."
+
 # ── System prompt (igual para todos os provedores) ────────────────────────────
 
 def _system_prompt() -> str:
@@ -61,28 +101,110 @@ Diretrizes do cliente: {get_content_guidelines()}
 
 Regras fixas:
 - Meta title: 50–60 caracteres. Incluir entidade principal + benefício real. Nunca usar "!" ou emojis.
-- Meta description: 145–160 caracteres. CTA implícito e compatível com o contexto do cliente.
+- Meta description: idealmente 145–160 caracteres. CTA implícito e compatível com o contexto do cliente.
+  Priorize frase completa e natural; se passar um pouco de 160 caracteres, tudo bem.
+  Nunca use reticências ("..." ou "…") e nunca termine com frase cortada.
 - Meta keywords: 8–12 termos separados por vírgula.
 - H1: diferente do meta title. Máximo 65 caracteres.
 - description_html: 3–5 parágrafos em HTML. Incluir 1 H2, 2–3 <p> e 1 lista <ul> com benefícios.
   Tom consultivo. Sem markdown — apenas HTML limpo.
 
-IMPORTANTE — comprimentos obrigatórios (conte os caracteres antes de responder):
+IMPORTANTE — comprimentos recomendados (conte os caracteres antes de responder):
 - meta_title: MÍNIMO 50, MÁXIMO 60 caracteres. Exemplo genérico: "Categoria Principal | Benefício Claro para Comprar"
-- meta_description: MÍNIMO 145, MÁXIMO 160 caracteres. Preencha até o limite.
+- meta_description: ALVO 145–160 caracteres. Pode passar um pouco quando necessário para manter a frase completa. Não corte com reticências.
 - h1: MÍNIMO 40, MÁXIMO 65 caracteres.
 
 Retorne APENAS um JSON válido, sem texto antes ou depois, sem blocos de código. Formato exato:
-{
+{{
   "meta_title": "...",
   "meta_description": "...",
   "meta_keywords": "...",
   "h1": "...",
   "description_html": "..."
-}"""
+}}"""
 
 
 # ── Provider clients ──────────────────────────────────────────────────────────
+
+def _response_preview(response, limit: int = 500) -> str:
+    return str(getattr(response, "text", "") or "")[:limit].replace("\n", " ").strip()
+
+
+def _retry_after_seconds(response, default: float = 4.0) -> float:
+    value = getattr(response, "headers", {}).get("Retry-After")
+    try:
+        if value:
+            return max(0.0, min(30.0, float(value)))
+    except Exception:
+        pass
+    try:
+        payload = response.json()
+        meta = ((payload.get("error") or {}).get("metadata") or {})
+        for key in ("retry_after_seconds", "retry_after_seconds_raw"):
+            if meta.get(key) is not None:
+                return max(0.0, min(30.0, float(meta.get(key))))
+    except Exception:
+        pass
+    return max(0.0, min(30.0, float(default)))
+
+
+def _quota_is_exhausted(text: str) -> bool:
+    lower = str(text or "").lower()
+    return any(token in lower for token in [
+        "free-models-per-day",
+        "rate limit-remaining\":\"0",
+        "ratelimit-remaining\":\"0",
+        "quota",
+        "limit: 0",
+        "requests per day",
+        "per day",
+    ])
+
+
+def _provider_retry_message(provider: str, response) -> str:
+    preview = _response_preview(response)
+    return f"{provider} HTTP {response.status_code}: {preview}"
+
+
+def _friendly_provider_error(provider: str, error: str) -> str:
+    text = str(error or "")
+    lower = text.lower()
+    if provider == "groq" and "429" in lower:
+        return "Groq atingiu limite de uso agora (429). Reduza o lote ou aguarde alguns minutos."
+    if provider == "openrouter" and "free-models-per-day" in lower:
+        return "OpenRouter atingiu o limite diario dos modelos gratuitos."
+    if provider == "openrouter" and "no healthy upstream" in lower:
+        return "OpenRouter gratuito ficou sem modelo saudavel no momento."
+    if provider == "openrouter" and ("no endpoints found" in lower or " 404" in lower):
+        return "OpenRouter tem modelo gratuito configurado que nao existe mais; use openrouter/free."
+    if provider == "openrouter" and "429" in lower:
+        return "OpenRouter gratuito esta limitado temporariamente (429)."
+    if provider == "gemini" and ("quota" in lower or "sem quota" in lower):
+        return "Gemini esta sem quota disponivel no momento."
+    if provider == "ollama" and ("connection" in lower or "max retries" in lower or "refused" in lower):
+        return "Ollama local nao respondeu. Abra o Ollama ou configure OLLAMA_BASE_URL."
+    if provider == "ollama" and "modelo ollama nao encontrado" in lower:
+        return text
+    return f"{provider}: {text}"
+
+
+def _format_provider_failures(errors: list[tuple[str, str]]) -> str:
+    friendly = []
+    seen = set()
+    for provider, error in errors:
+        message = _friendly_provider_error(provider, error)
+        if message not in seen:
+            seen.add(message)
+            friendly.append(message)
+    if not friendly:
+        return "Todos os providers de IA falharam."
+    detail = "\n- " + "\n- ".join(friendly)
+    return (
+        "Todos os providers de IA falharam." + detail +
+        "\n\nSugestao: gere em lotes menores (5 a 10), aguarde a quota renovar, "
+        "adicione creditos/chave paga, ou use provider ollama local."
+    )
+
 
 def _call_gemini(prompt: str, api_key: str) -> str:
     # Try gemini-2.0-flash first, fallback to gemini-1.5-flash-8b
@@ -101,7 +223,13 @@ def _call_gemini(prompt: str, api_key: str) -> str:
             try:
                 r = requests.post(url, json=body, timeout=45)
                 if r.status_code == 429:
-                    last_error = f"429 rate limit (model: {model})"
+                    body_preview = r.text[:500].replace("\n", " ")
+                    last_error = f"429 rate limit/quota (model: {model}): {body_preview}"
+                    if "quota" in body_preview.lower() or "limit: 0" in body_preview.lower():
+                        raise RuntimeError(
+                            "Gemini sem quota disponivel no momento. "
+                            "Use o provider auto, openrouter ou groq para continuar."
+                        )
                     continue
                 r.raise_for_status()
                 return r.json()["candidates"][0]["content"]["parts"][0]["text"]
@@ -110,6 +238,8 @@ def _call_gemini(prompt: str, api_key: str) -> str:
                     break  # try next model
                 last_error = str(e)
             except Exception as e:
+                if "Gemini sem quota" in str(e):
+                    raise
                 last_error = str(e)
     raise RuntimeError(f"Gemini falhou apos todas as tentativas: {last_error}")
 
@@ -118,7 +248,7 @@ def _call_groq(prompt: str, api_key: str) -> str:
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     body = {
-        "model": "llama-3.3-70b-versatile",
+        "model": GROQ_MODEL,
         "messages": [
             {"role": "system", "content": _system_prompt()},
             {"role": "user",   "content": prompt},
@@ -126,9 +256,23 @@ def _call_groq(prompt: str, api_key: str) -> str:
         "temperature": 0.4,
         "max_tokens": _max_output_tokens(),
     }
-    r = requests.post(url, json=body, headers=headers, timeout=30)
-    r.raise_for_status()
-    return r.json()["choices"][0]["message"]["content"]
+    last_error = ""
+    for attempt, fallback_wait in enumerate([3, 8, 15]):
+        r = requests.post(url, json=body, headers=headers, timeout=45)
+        if r.status_code in {429, 500, 502, 503, 504}:
+            preview = _response_preview(r)
+            last_error = _provider_retry_message("Groq", r)
+            if _quota_is_exhausted(preview):
+                raise RuntimeError(last_error)
+            if attempt < 2:
+                time.sleep(_retry_after_seconds(r, fallback_wait))
+                continue
+        try:
+            r.raise_for_status()
+        except requests.exceptions.HTTPError as exc:
+            raise RuntimeError(_provider_retry_message("Groq", r)) from exc
+        return r.json()["choices"][0]["message"]["content"]
+    raise RuntimeError(last_error or "Groq falhou apos retries")
 
 
 def _call_openrouter(prompt: str, api_key: str) -> str:
@@ -159,12 +303,22 @@ def _call_openrouter(prompt: str, api_key: str) -> str:
         if use_json_mode:
             payload["response_format"] = {"type": "json_object"}
 
-        r = requests.post(url, json=payload, headers=headers, timeout=45)
-        try:
-            r.raise_for_status()
-        except requests.exceptions.HTTPError as exc:
-            body_preview = r.text[:500].replace("\n", " ")
-            raise RuntimeError(f"OpenRouter HTTP {r.status_code}: {body_preview}") from exc
+        r = None
+        for attempt, fallback_wait in enumerate([3, 8]):
+            r = requests.post(url, json=payload, headers=headers, timeout=60)
+            if r.status_code in {429, 500, 502, 503, 504}:
+                body_preview = _response_preview(r)
+                if _quota_is_exhausted(body_preview):
+                    raise RuntimeError(f"OpenRouter HTTP {r.status_code}: {body_preview}")
+                if attempt == 0:
+                    time.sleep(_retry_after_seconds(r, fallback_wait))
+                    continue
+            try:
+                r.raise_for_status()
+            except requests.exceptions.HTTPError as exc:
+                body_preview = _response_preview(r)
+                raise RuntimeError(f"OpenRouter HTTP {r.status_code}: {body_preview}") from exc
+            break
 
         data = r.json()
         if "choices" not in data:
@@ -178,7 +332,7 @@ def _call_openrouter(prompt: str, api_key: str) -> str:
             raise RuntimeError(f"OpenRouter sem content: {body_preview}")
         return content
 
-    errors = []
+    errors: list[tuple[str, str]] = []
     for model in models:
         try:
             return request_once(model, use_json_mode=True)
@@ -199,6 +353,40 @@ def _call_openrouter(prompt: str, api_key: str) -> str:
                 raise
 
     raise RuntimeError("OpenRouter falhou em todos os modelos: " + " | ".join(errors[-5:]))
+
+
+def _call_ollama(prompt: str, base_url: str) -> str:
+    url = (base_url or "http://localhost:11434").rstrip("/") + "/api/chat"
+    body = {
+        "model": OLLAMA_MODEL,
+        "stream": False,
+        "messages": [
+            {"role": "system", "content": _system_prompt()},
+            {"role": "user", "content": prompt},
+        ],
+        "options": {
+            "temperature": 0.3,
+            "num_predict": _max_output_tokens(),
+        },
+    }
+    try:
+        r = requests.post(url, json=body, timeout=180)
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Ollama local nao respondeu em {url}: {exc}") from exc
+    if r.status_code == 404:
+        raise RuntimeError(
+            f"Modelo Ollama nao encontrado: {OLLAMA_MODEL}. "
+            f"Rode: ollama pull {OLLAMA_MODEL}"
+        )
+    try:
+        r.raise_for_status()
+    except requests.exceptions.HTTPError as exc:
+        raise RuntimeError(f"Ollama HTTP {r.status_code}: {_response_preview(r)}") from exc
+    data = r.json()
+    content = (data.get("message") or {}).get("content")
+    if not content:
+        raise RuntimeError(f"Ollama respondeu sem conteudo: {json.dumps(data, ensure_ascii=False)[:500]}")
+    return content
 
 
 def _call_mistral(prompt: str, api_key: str) -> str:
@@ -239,6 +427,7 @@ PROVIDERS = {
     "groq":      _call_groq,
     "mistral":   _call_mistral,
     "anthropic": _call_anthropic,
+    "ollama":    _call_ollama,
 }
 
 
@@ -329,24 +518,26 @@ def _parse_json(raw: str) -> dict:
 
 def generate_for_page(page: dict, gsc_data: dict = None,
                       provider: str = None, api_key: str = None) -> dict:
-    # Auto-detect provider if not specified
+    # Auto-detect provider if not specified. Keep provider/key pairs aligned:
+    # a requested provider without its own key may fall back to another provider,
+    # but must never be called with a different provider's key.
     if provider and not api_key:
         api_key = get_provider_api_key(provider)
 
-    if not provider or not api_key:
-        auto_provider, auto_key = get_default_provider()
-        provider = provider or auto_provider
-        api_key  = api_key  or auto_key
+    sequence = get_provider_sequence(provider or "")
+    if provider and api_key:
+        requested_pair = (provider, api_key)
+        if requested_pair in sequence:
+            sequence.remove(requested_pair)
+        sequence.insert(0, requested_pair)
 
-    if not provider:
+    if not sequence:
         raise RuntimeError(
-            "Nenhuma chave de API configurada.\n"
-            "Edite o arquivo .env e adicione sua chave GEMINI_API_KEY (gratuita).\n"
-            "Obter em: https://aistudio.google.com/apikey")
+            "Nenhum provider de IA configurado.\n"
+            "Adicione uma chave GEMINI_API_KEY, OPENROUTER_API_KEY ou GROQ_API_KEY no .env, "
+            "ou use Ollama local com OLLAMA_ENABLED=1.")
 
-    sequence = get_provider_sequence(provider)
-    if provider and api_key and (not sequence or sequence[0] != (provider, api_key)):
-        sequence.insert(0, (provider, api_key))
+    provider, api_key = sequence[0]
     prompt = _build_prompt(page, gsc_data)
     errors = []
     result = None
@@ -354,7 +545,7 @@ def generate_for_page(page: dict, gsc_data: dict = None,
     for provider_name, provider_key in sequence:
         caller = PROVIDERS.get(provider_name)
         if not caller:
-            errors.append(f"{provider_name}: provider desconhecido")
+            errors.append((provider_name, "provider desconhecido"))
             continue
         try:
             raw = caller(prompt, provider_key)
@@ -362,18 +553,18 @@ def generate_for_page(page: dict, gsc_data: dict = None,
             used_provider = provider_name
             break
         except Exception as exc:
-            errors.append(f"{provider_name}: {exc}")
+            errors.append((provider_name, str(exc)))
             continue
 
     if result is None:
-        raise RuntimeError("Todos os providers de IA falharam: " + " | ".join(errors))
+        raise RuntimeError(_format_provider_failures(errors))
 
     result = _enforce_lengths(result)
 
     result["_url"]              = page.get("url", "")
     result["_provider"]         = used_provider
     if errors:
-        result["_fallback_errors"] = errors
+        result["_fallback_errors"] = [f"{name}: {error}" for name, error in errors]
     result["_generated_at"]     = datetime.now().isoformat()
     result["_meta_title_len"]   = len(result.get("meta_title", ""))
     result["_meta_desc_len"]    = len(result.get("meta_description", ""))
@@ -382,18 +573,15 @@ def generate_for_page(page: dict, gsc_data: dict = None,
 
 
 def _enforce_lengths(result: dict) -> dict:
-    """Trim fields to Google's display limits and warn if too short."""
+    """Normalize generated fields without truncating meta descriptions."""
     title = result.get("meta_title", "")
-    desc  = result.get("meta_description", "")
+    desc  = re.sub(r"\s+", " ", str(result.get("meta_description", "") or "")).strip()
+    if desc.endswith(("...", "…")):
+        desc = desc.rstrip(".… ").strip()
 
-    # Hard trim at Google limits
+    # Keep title bounded because Shopify titles are short UI fields.
     if len(title) > 60:
-        title = title[:57].rstrip() + "..."
-    if len(desc) > 160:
-        # Cut at last space before limit
-        desc = desc[:157]
-        last_space = desc.rfind(" ")
-        desc = (desc[:last_space] if last_space > 120 else desc) + "..."
+        title = _trim_without_ellipsis(title, 60, 45, end_sentence=False)
 
     result["meta_title"]       = title
     result["meta_description"] = desc
@@ -404,6 +592,8 @@ def _enforce_lengths(result: dict) -> dict:
         result["_warnings"].append(f"title curto ({len(title)} chars)")
     if len(desc) < 140:
         result["_warnings"].append(f"desc curta ({len(desc)} chars)")
+    if len(desc) > 170:
+        result["_warnings"].append(f"desc longa ({len(desc)} chars)")
     if len(result.get("h1", "")) < 30:
         result["_warnings"].append(f"h1 curto ({len(result.get('h1',''))} chars)")
 
