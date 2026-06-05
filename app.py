@@ -320,10 +320,32 @@ def _save_user_site_config(config: dict) -> str:
             "ou recrie o banco com supabase/full_setup.sql atualizado."
         ) from exc
 
-    settings = dict(config)
+    existing_settings: dict = {}
+    if site_id and not config.get("_new_site"):
+        try:
+            existing_rows = (
+                sb.table("user_site_settings")
+                .select("settings")
+                .eq("user_id", uid)
+                .eq("site_id", site_id)
+                .limit(1)
+                .execute().data
+                or []
+            )
+            raw_settings = existing_rows[0].get("settings") if existing_rows else {}
+            if isinstance(raw_settings, dict):
+                existing_settings = dict(raw_settings)
+        except Exception:
+            existing_settings = {}
+
+    settings = {**existing_settings, **dict(config)}
+    settings.pop("_new_site", None)
     settings["site_url"] = site_url
     settings["site_name"] = site_name
-    settings["gsc_property"] = settings.get("gsc_property") or ((site_url + "/") if site_url else "")
+    gsc_property = str(settings.get("gsc_property") or "").strip()
+    if gsc_property and not gsc_property.endswith("/"):
+        gsc_property += "/"
+    settings["gsc_property"] = gsc_property or ((site_url + "/") if site_url else "")
     settings.update(_user_site_gsc_paths(uid, str(site_id)))
     now = datetime.now(timezone.utc).isoformat()
     payload = {
