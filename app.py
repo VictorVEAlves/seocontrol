@@ -1762,7 +1762,9 @@ def dashboard_data():
         _clear_dashboard_cache_for_active_site((period,))
     try:
         from modules.gsc_api import get_dashboard_data
-        return jsonify(get_dashboard_data(period_days=period))
+        data = get_dashboard_data(period_days=period)
+        status = 503 if isinstance(data, dict) and data.get("error") else 200
+        return jsonify(data), status
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -1887,6 +1889,7 @@ def index():
 
   .chart-panel {{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:18px 20px;margin-bottom:16px}}
   .chart-wrap  {{position:relative;height:270px}}
+  .chart-error {{display:none;margin-top:10px;background:var(--bad-bg);border:1px solid #fecaca;color:var(--bad);border-radius:var(--radius-sm);padding:10px 12px;font-size:12px;font-weight:600}}
 
   .dash-two-col {{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px}}
 
@@ -1972,6 +1975,7 @@ def index():
     </div>
   </div>
   <div class="chart-wrap"><canvas id="perf-chart"></canvas></div>
+  <div class="chart-error" id="chart-error"></div>
 </div>
 
 <div class="gemini-dash" id="gemini-dash">
@@ -2229,12 +2233,33 @@ def index():
       '<span class="sk" style="width:72%;height:13px;display:block">&nbsp;</span>';
   }}
 
+  async function fetchJsonWithTimeout(url, timeoutMs) {{
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {{
+      const resp = await fetch(url, {{ signal: ctrl.signal }});
+      let data = {{}};
+      try {{ data = await resp.json(); }}
+      catch(e) {{ data = {{ error: 'Resposta inválida do servidor.' }}; }}
+      if (!resp.ok && !data.error && !data.ai_error) {{
+        data.error = 'Servidor retornou HTTP ' + resp.status + '.';
+      }}
+      return data;
+    }} catch(e) {{
+      if (e.name === 'AbortError') {{
+        return {{ error: 'Tempo esgotado ao buscar dados do Google Search Console. Tente atualizar em alguns segundos.' }};
+      }}
+      return {{ error: e.message || 'Falha ao buscar dados.' }};
+    }} finally {{
+      clearTimeout(timer);
+    }}
+  }}
+
   async function loadAI(days, force) {{
     skAI();
     try {{
-      const r = await fetch('/dashboard/ai?period='+days+(force?'&force=1':''));
-      const d = await r.json();
-      renderAI(d.ai_summary || (d.ai_error ? '⚠ '+d.ai_error : ''));
+      const d = await fetchJsonWithTimeout('/dashboard/ai?period='+days+(force?'&force=1':''), 18000);
+      renderAI(d.ai_summary || (d.ai_error ? '⚠ '+d.ai_error : (d.error ? '⚠ '+d.error : '')));
     }} catch(e) {{
       renderAI('⚠ Erro Gemini: '+e.message);
     }}
@@ -2247,6 +2272,11 @@ def index():
       document.getElementById('kp-'+k).textContent = '';
     }});
     document.getElementById('chart-period').textContent = 'Sem dados';
+    const chartError = document.getElementById('chart-error');
+    if (chartError) {{
+      chartError.style.display = 'block';
+      chartError.textContent = msg;
+    }}
     if (_chart) {{ _chart.destroy(); _chart = null; }}
     ['tbl-queries','tbl-pages'].forEach(id => {{
       document.getElementById(id).innerHTML =
@@ -2261,10 +2291,14 @@ def index():
       b.classList.toggle('active', +b.dataset.days === days));
     setLoading(true);
     skAI();
+    const chartError = document.getElementById('chart-error');
+    if (chartError) {{
+      chartError.style.display = 'none';
+      chartError.textContent = '';
+    }}
     let gscOk = false;
     try {{
-      const resp = await fetch('/dashboard/data?period='+days+(force?'&force=1':''));
-      const data = await resp.json();
+      const data = await fetchJsonWithTimeout('/dashboard/data?period='+days+(force?'&force=1':''), 22000);
       if (data.error) {{
         showError('GSC indisponível: ' + data.error);
         return;
