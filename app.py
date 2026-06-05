@@ -645,19 +645,27 @@ def styles() -> str:
     return """<style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
     :root {
-      --brand:       #8f1d2c;
-      --brand-dark:  #6d1521;
-      --brand-light: #fdf2f3;
-      --brand-mid:   #f5d8db;
-      --nav-bg:      #0f1723;
-      --nav-border:  #1e2d3d;
-      --ink:         #0f172a;
-      --ink-mid:     #334155;
-      --muted:       #64748b;
-      --line:        #e2e8f0;
-      --line-light:  #f1f5f9;
-      --canvas:      #f8fafc;
-      --panel:       #ffffff;
+      --brand:       #8a1538;
+      --brand-dark:  #5c1027;
+      --brand-light: #fff5f7;
+      --brand-mid:   #ead1d8;
+      --accent:      #c8a15a;
+      --accent-dark: #96753a;
+      --accent-light:#fff7e6;
+      --nav-bg:      #080d18;
+      --nav-border:  #1d2738;
+      --ink:         #111827;
+      --ink-mid:     #374151;
+      --muted:       #6b7280;
+      --line:        #e6dfd4;
+      --line-light:  #f3eee7;
+      --canvas:      #f6f3ee;
+      --panel:       #fffdfa;
+      --surface:     #fffdfa;
+      --surface2:    #f8f3ec;
+      --border:      #e6dfd4;
+      --bg:          #f6f3ee;
+      --hover:       rgba(138,21,56,.055);
       --ok:          #16a34a;
       --ok-bg:       #dcfce7;
       --warn:        #d97706;
@@ -666,9 +674,9 @@ def styles() -> str:
       --bad-bg:      #fee2e2;
       --info:        #2563eb;
       --info-bg:     #dbeafe;
-      --shadow-sm:   0 1px 3px rgba(15,23,42,.06), 0 1px 2px rgba(15,23,42,.04);
-      --shadow-md:   0 4px 12px rgba(15,23,42,.08), 0 2px 4px rgba(15,23,42,.04);
-      --shadow-lg:   0 10px 30px rgba(15,23,42,.10), 0 4px 8px rgba(15,23,42,.06);
+      --shadow-sm:   0 1px 3px rgba(20,14,8,.07), 0 1px 2px rgba(20,14,8,.04);
+      --shadow-md:   0 8px 22px rgba(20,14,8,.09), 0 2px 6px rgba(20,14,8,.05);
+      --shadow-lg:   0 18px 48px rgba(20,14,8,.13), 0 6px 16px rgba(20,14,8,.07);
       --radius:      10px;
       --radius-sm:   6px;
       --radius-lg:   14px;
@@ -688,7 +696,9 @@ def styles() -> str:
     .sidebar {
       width: 232px;
       flex-shrink: 0;
-      background: var(--nav-bg);
+      background:
+        radial-gradient(circle at 15% 0%, rgba(200,161,90,.16), transparent 28%),
+        linear-gradient(180deg, #0b1020 0%, var(--nav-bg) 44%, #060a12 100%);
       border-right: 1px solid var(--nav-border);
       display: flex;
       flex-direction: column;
@@ -699,7 +709,7 @@ def styles() -> str:
     }
     .sidebar-brand {
       padding: 18px 16px 14px;
-      border-bottom: 1px solid var(--nav-border);
+      border-bottom: 1px solid rgba(200,161,90,.14);
     }
     .sidebar-brand .logo {
       display: flex;
@@ -708,21 +718,21 @@ def styles() -> str:
     }
     .sidebar-brand .logo-icon {
       width: 34px; height: 34px;
-      background: var(--brand);
+      background: linear-gradient(135deg, var(--brand), #b77755 58%, var(--accent));
       border-radius: 9px;
       display: flex; align-items: center; justify-content: center;
       font-weight: 800; color: #fff; font-size: 13px; flex-shrink: 0;
-      box-shadow: 0 2px 8px rgba(143,29,44,.4);
+      box-shadow: 0 8px 22px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.22);
     }
-    .sidebar-brand .logo-text { color: #f1f5f9; font-weight: 700; font-size: 14px; line-height: 1.2; }
-    .sidebar-brand .logo-sub { color: #64748b; font-size: 11px; margin-top: 1px; }
+    .sidebar-brand .logo-text { color: #fff7ed; font-weight: 800; font-size: 14px; line-height: 1.2; letter-spacing:.01em; }
+    .sidebar-brand .logo-sub { color: #9ca3af; font-size: 11px; margin-top: 1px; }
     .sidebar-env {
       margin: 10px 0 0;
       padding: 4px 8px;
-      background: rgba(255,255,255,.05);
-      border: 1px solid rgba(255,255,255,.07);
+      background: rgba(200,161,90,.09);
+      border: 1px solid rgba(200,161,90,.16);
       border-radius: 6px;
-      color: #64748b;
+      color: #b8a47c;
       font-size: 10px;
       font-weight: 600;
       text-transform: uppercase;
@@ -736,7 +746,7 @@ def styles() -> str:
       display: flex;
       align-items: center;
       gap: 7px;
-      background: var(--brand);
+      background: linear-gradient(135deg, var(--brand), var(--brand-dark));
       color: #fff !important;
       text-decoration: none;
       padding: 8px 12px;
@@ -745,18 +755,18 @@ def styles() -> str:
       font-weight: 700;
       letter-spacing: .02em;
       transition: background .15s, opacity .15s;
-      box-shadow: 0 2px 6px rgba(143,29,44,.35);
+      box-shadow: 0 8px 18px rgba(91,16,39,.28);
     }
-    .sidebar-cta a:hover { background: #a82234; opacity: 1; text-decoration: none; }
+    .sidebar-cta a:hover { background: linear-gradient(135deg, #9d1b44, var(--brand-dark)); opacity: 1; text-decoration: none; }
     .sidebar-cta svg { flex-shrink: 0; opacity: 1; }
     .nav-section { padding: 10px 10px 4px; }
     .nav-section + .nav-section { border-top: 1px solid rgba(255,255,255,.05); margin-top: 2px; padding-top: 12px; }
-    .nav-label { color: #374151; font-size: 9.5px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; padding: 0 8px; margin-bottom: 3px; }
+    .nav-label { color: #7f8da3; font-size: 9.5px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; padding: 0 8px; margin-bottom: 3px; }
     .nav a {
       display: flex;
       align-items: center;
       gap: 9px;
-      color: #94a3b8;
+      color: #a7b0c0;
       text-decoration: none;
       padding: 7px 10px;
       border-radius: 7px;
@@ -765,9 +775,9 @@ def styles() -> str:
       transition: background .12s, color .12s;
       border-left: 2px solid transparent;
     }
-    .nav a:hover { background: rgba(255,255,255,.06); color: #cbd5e1; text-decoration: none; border-left-color: rgba(255,255,255,.12); }
-    .nav a.active { background: rgba(143,29,44,.2); color: #fca5a5; font-weight: 600; border-left-color: var(--brand); }
-    .nav a.active .nav-icon { color: #fb7185; opacity: 1; }
+    .nav a:hover { background: rgba(255,255,255,.06); color: #fff7ed; text-decoration: none; border-left-color: rgba(200,161,90,.35); }
+    .nav a.active { background: linear-gradient(90deg, rgba(138,21,56,.38), rgba(200,161,90,.08)); color: #fff7ed; font-weight: 700; border-left-color: var(--accent); box-shadow: inset 0 0 0 1px rgba(255,255,255,.03); }
+    .nav a.active .nav-icon { color: var(--accent); opacity: 1; }
     .nav-icon { width: 15px; height: 15px; flex-shrink: 0; opacity: .55; }
     .nav a.active .nav-icon { opacity: 1; }
     .nav a:hover .nav-icon { opacity: .8; }
@@ -777,8 +787,8 @@ def styles() -> str:
       font-weight: 700;
       padding: 1px 6px;
       border-radius: 10px;
-      background: rgba(220,38,38,.25);
-      color: #fca5a5;
+      background: rgba(200,161,90,.18);
+      color: #f8d99b;
     }
     .sidebar-footer {
       margin-top: auto;
@@ -787,7 +797,8 @@ def styles() -> str:
     }
     .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
     .topbar {
-      background: var(--panel);
+      background: rgba(255,253,250,.82);
+      backdrop-filter: blur(12px);
       border-bottom: 1px solid var(--line);
       padding: 14px 28px;
       display: flex;
@@ -912,7 +923,7 @@ def styles() -> str:
     }
     td { padding: 11px 14px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; color: var(--ink-mid); }
     tr:last-child td { border-bottom: none; }
-    tbody tr:hover td { background: #fafbfc; }
+    tbody tr:hover td { background: #fbf7f0; }
 
     /* ── Badges ── */
     .badge { display: inline-flex; align-items: center; gap: 4px; border-radius: 20px; padding: 3px 9px; font-size: 11px; font-weight: 700; white-space: nowrap; }
@@ -942,8 +953,8 @@ def styles() -> str:
       white-space: nowrap;
     }
     .btn:hover { border-color: var(--ink-mid); color: var(--ink); text-decoration: none; }
-    .btn-primary { background: var(--brand); color: #fff; border-color: var(--brand); }
-    .btn-primary:hover { background: var(--brand-dark); border-color: var(--brand-dark); color: #fff; }
+    .btn-primary { background: linear-gradient(135deg, var(--brand), var(--brand-dark)); color: #fff; border-color: var(--brand-dark); box-shadow: 0 8px 16px rgba(92,16,39,.16); }
+    .btn-primary:hover { background: linear-gradient(135deg, #9d1b44, var(--brand-dark)); border-color: var(--brand-dark); color: #fff; }
     .btn-primary:disabled { opacity: .6; cursor: wait; }
     .btn-ghost { border-color: transparent; background: transparent; }
     .btn-ghost:hover { background: var(--line-light); border-color: var(--line); }
@@ -964,7 +975,7 @@ def styles() -> str:
       outline: none;
       transition: border-color .12s;
     }
-    .filters input:focus, .filters select:focus { border-color: var(--brand); box-shadow: 0 0 0 3px rgba(143,29,44,.1); }
+    .filters input:focus, .filters select:focus { border-color: var(--brand); box-shadow: 0 0 0 3px rgba(138,21,56,.11); }
 
     /* ── Tools panel ── */
     .tool-grid { display: grid; grid-template-columns: 360px 1fr; gap: 18px; align-items: start; }
@@ -981,7 +992,7 @@ def styles() -> str:
       width: 100%;
       transition: border-color .12s;
     }
-    .field input:focus, .field select:focus { border-color: var(--brand); box-shadow: 0 0 0 3px rgba(143,29,44,.1); }
+    .field input:focus, .field select:focus { border-color: var(--brand); box-shadow: 0 0 0 3px rgba(138,21,56,.11); }
     .checks { display: grid; gap: 10px; margin: 14px 0; }
     .checks label { display: flex; gap: 9px; align-items: center; font-size: 13px; color: var(--ink-mid); cursor: pointer; }
     .checks input[type=checkbox] { width: 15px; height: 15px; accent-color: var(--brand); cursor: pointer; }
@@ -1293,8 +1304,15 @@ def page_shell(title: str, body: str, active: str = "") -> str:
       </div>
       <div class="sidebar-env">&#9679; Local</div>
     </div>
+    <nav class="nav-section">
+      <div class="nav-label">Principal</div>
+      <nav class="nav">
+        {nav_link("/", "Dashboard", "dashboard")}
+        {nav_link("/kanban", "Kanban", "kanban")}
+      </nav>
+    </nav>
     <div class="sidebar-cta">
-      <a href="/tools">
+      <a href="/full-audit?new=1">
         <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="8" y1="2" x2="8" y2="14"/><line x1="2" y1="8" x2="14" y2="8"/></svg>
         Nova Auditoria
       </a>
@@ -1305,13 +1323,6 @@ def page_shell(title: str, body: str, active: str = "") -> str:
         {nav_link("/full-audit", "Auditoria Completa", "audit")}
         {nav_link("/tools", "Ferramentas", "tools")}
         {nav_link("/reports", "Relatórios", "reports")}
-      </nav>
-    </nav>
-    <nav class="nav-section">
-      <div class="nav-label">Gestão</div>
-      <nav class="nav">
-        {nav_link("/", "Dashboard", "dashboard")}
-        {nav_link("/kanban", "Kanban", "kanban")}
       </nav>
     </nav>
     <nav class="nav-section">
@@ -1708,7 +1719,7 @@ def signup():
             }
             res = get_supabase_public().auth.sign_up(payload)
             if _store_auth_session(res):
-                return redirect("/settings")
+                return redirect("/")
             return _auth_form("Criar conta", "signup", "Conta criada. Confirme seu e-mail e faça login.")
         except Exception as exc:
             return _auth_form("Criar conta", "signup", str(exc))
