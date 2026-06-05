@@ -131,6 +131,39 @@ def test_shopify_settings_saves_manual_credential_fields(monkeypatch):
     assert ("SHOPIFY_CONTENT_GUIDELINES", "Nao citar Secret Outlet.") in updates
 
 
+def test_shopify_settings_authenticated_saves_to_active_site_settings(monkeypatch):
+    monkeypatch.setattr(dashboard, "_is_authenticated", lambda: True)
+    cfg = {"site_id": "site-1", "SHOPIFY_CLIENT_ID": "old-client"}
+    monkeypatch.setattr(dashboard, "_load_active_site_config", lambda: cfg)
+    updates = {}
+    monkeypatch.setattr(dashboard, "_update_active_user_site_config", lambda **kwargs: (updates.update(kwargs), cfg.update(kwargs)))
+
+    def _fail_env_write(_key, _value):
+        raise AssertionError("production save must not write .env")
+
+    monkeypatch.setattr(dashboard, "_update_env_file", _fail_env_write)
+
+    response = dashboard.app.test_client().post(
+        "/shopify/settings",
+        json={
+            "store_domain": "novaloja.myshopify.com",
+            "api_version": "2026-04",
+            "public_base_url": "https://www.novaloja.com.br",
+            "shopify_client_id": "client-id",
+            "shopify_client_secret": "client-secret",
+            "shopify_site_name": "Nova Loja",
+            "shopify_business_context": "Moda premium",
+            "shopify_content_guidelines": "Usar PT-BR.",
+        },
+    )
+
+    assert response.status_code == 200
+    assert updates["SHOPIFY_STORE_DOMAIN"] == "novaloja.myshopify.com"
+    assert updates["SHOPIFY_CLIENT_ID"] == "client-id"
+    assert updates["SHOPIFY_CLIENT_SECRET"] == "client-secret"
+    assert response.get_json()["config"]["ready"] is True
+
+
 def test_shopify_runtime_context_uses_shopify_fields(monkeypatch):
     monkeypatch.setenv("SHOPIFY_PUBLIC_BASE_URL", "https://www.novaloja.com.br")
     monkeypatch.setenv("SHOPIFY_STORE_DOMAIN", "novaloja.myshopify.com")

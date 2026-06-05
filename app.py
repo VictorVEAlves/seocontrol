@@ -3090,16 +3090,24 @@ def _shopify_mod():
     return shopify_seo
 
 
+def _shopify_saved_setting(key: str, default: str = "") -> str:
+    if has_request_context() and _is_authenticated():
+        cfg = _load_active_site_config()
+        if key in cfg:
+            return str(cfg.get(key) or "").strip()
+    return os.environ.get(key, default).strip()
+
+
 def _shopify_config_state() -> dict:
-    store = os.environ.get("SHOPIFY_STORE_DOMAIN", "").strip()
-    client_id = os.environ.get("SHOPIFY_CLIENT_ID", "").strip()
-    client_secret = os.environ.get("SHOPIFY_CLIENT_SECRET", "").strip()
-    admin_token = os.environ.get("SHOPIFY_ADMIN_TOKEN", "").strip()
-    public_base = os.environ.get("SHOPIFY_PUBLIC_BASE_URL", "").strip()
-    api_version = os.environ.get("SHOPIFY_API_VERSION", "2026-04").strip() or "2026-04"
-    site_name = os.environ.get("SHOPIFY_SITE_NAME", "").strip()
-    business_context = os.environ.get("SHOPIFY_BUSINESS_CONTEXT", "").strip()
-    content_guidelines = os.environ.get("SHOPIFY_CONTENT_GUIDELINES", "").strip()
+    store = _shopify_saved_setting("SHOPIFY_STORE_DOMAIN")
+    client_id = _shopify_saved_setting("SHOPIFY_CLIENT_ID")
+    client_secret = _shopify_saved_setting("SHOPIFY_CLIENT_SECRET")
+    admin_token = _shopify_saved_setting("SHOPIFY_ADMIN_TOKEN")
+    public_base = _shopify_saved_setting("SHOPIFY_PUBLIC_BASE_URL")
+    api_version = _shopify_saved_setting("SHOPIFY_API_VERSION", "2026-04") or "2026-04"
+    site_name = _shopify_saved_setting("SHOPIFY_SITE_NAME")
+    business_context = _shopify_saved_setting("SHOPIFY_BUSINESS_CONTEXT")
+    content_guidelines = _shopify_saved_setting("SHOPIFY_CONTENT_GUIDELINES")
     return {
         "store_domain": store,
         "client_id": _mask_key(client_id),
@@ -4289,15 +4297,13 @@ document.addEventListener('DOMContentLoaded', protectShopifyCredentialFields);
 def shopify_settings_save():
     data = request.get_json(silent=True) or {}
     values = {
-        "SHOPIFY_STORE_DOMAIN": data.get("store_domain", ""),
-        "SHOPIFY_API_VERSION": data.get("api_version", "2026-04") or "2026-04",
-        "SHOPIFY_PUBLIC_BASE_URL": data.get("public_base_url", ""),
+        "SHOPIFY_STORE_DOMAIN": str(data.get("store_domain", "") or "").strip(),
+        "SHOPIFY_API_VERSION": str(data.get("api_version", "2026-04") or "2026-04").strip(),
+        "SHOPIFY_PUBLIC_BASE_URL": str(data.get("public_base_url", "") or "").strip(),
         "SHOPIFY_SITE_NAME": _single_line_setting(data.get("shopify_site_name", "")),
         "SHOPIFY_BUSINESS_CONTEXT": _single_line_setting(data.get("shopify_business_context", "")),
         "SHOPIFY_CONTENT_GUIDELINES": _single_line_setting(data.get("shopify_content_guidelines", "")),
     }
-    for key, value in values.items():
-        _update_env_file(key, str(value or "").strip())
     client_id = _shopify_form_value(data, "shopify_client_id", "client_id")
     client_secret = _shopify_form_value(data, "shopify_client_secret", "client_secret")
     if _looks_like_browser_autofill(client_id) or _looks_like_browser_autofill(client_secret):
@@ -4306,9 +4312,18 @@ def shopify_settings_save():
             "error": "O navegador tentou preencher credenciais da Shopify com dados salvos. Limpe o campo e cole o ID/secret do app manualmente.",
         }), 400
     if client_id:
-        _update_env_file("SHOPIFY_CLIENT_ID", client_id)
+        values["SHOPIFY_CLIENT_ID"] = client_id
     if client_secret:
-        _update_env_file("SHOPIFY_CLIENT_SECRET", client_secret)
+        values["SHOPIFY_CLIENT_SECRET"] = client_secret
+
+    if _is_authenticated():
+        cfg = _load_active_site_config()
+        if not cfg.get("site_id"):
+            return jsonify({"ok": False, "error": "Cadastre um site antes de salvar credenciais Shopify."}), 400
+        _update_active_user_site_config(**values)
+    else:
+        for key, value in values.items():
+            _update_env_file(key, str(value or "").strip())
     return jsonify({"ok": True, "config": _shopify_config_state()})
 
 

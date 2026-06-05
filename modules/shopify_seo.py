@@ -25,6 +25,7 @@ from typing import Iterable
 import requests
 
 from config import (
+    _load_site_config,
     clear_runtime_site_config,
     get_default_provider,
     get_provider_api_key,
@@ -88,18 +89,25 @@ def _default_site_name(value: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
+def _shopify_setting(key: str, default: str = "") -> str:
+    cfg = _load_site_config()
+    if key in cfg:
+        return str(cfg.get(key) or "").strip()
+    return os.environ.get(key, default).strip()
+
+
 def _shopify_generation_context() -> dict:
-    public_base = os.environ.get("SHOPIFY_PUBLIC_BASE_URL", "").rstrip("/")
-    store_domain = os.environ.get("SHOPIFY_STORE_DOMAIN", "").strip()
-    site_name = os.environ.get("SHOPIFY_SITE_NAME", "").strip() or _default_site_name(public_base or store_domain)
-    business_context = os.environ.get("SHOPIFY_BUSINESS_CONTEXT", "").strip()
+    public_base = _shopify_setting("SHOPIFY_PUBLIC_BASE_URL").rstrip("/")
+    store_domain = _shopify_setting("SHOPIFY_STORE_DOMAIN")
+    site_name = _shopify_setting("SHOPIFY_SITE_NAME") or _default_site_name(public_base or store_domain)
+    business_context = _shopify_setting("SHOPIFY_BUSINESS_CONTEXT")
     if not business_context:
         business_context = (
             f"Loja virtual Shopify {site_name}. Gere SEO apenas com base na loja, "
             "na categoria/produto e nas informacoes disponiveis na Shopify. "
             "Nao cite marcas, ofertas ou nomes de outras lojas se eles nao aparecerem no item."
         )
-    content_guidelines = os.environ.get("SHOPIFY_CONTENT_GUIDELINES", "").strip()
+    content_guidelines = _shopify_setting("SHOPIFY_CONTENT_GUIDELINES")
     if not content_guidelines:
         content_guidelines = (
             "Escreva em PT-BR, com tom comercial claro e natural. "
@@ -140,7 +148,7 @@ def _resource_path(resource: dict) -> str:
 
 def _public_base_url() -> str:
     return (
-        os.environ.get("SHOPIFY_PUBLIC_BASE_URL", "").rstrip("/")
+        _shopify_setting("SHOPIFY_PUBLIC_BASE_URL").rstrip("/")
         or get_site_url().rstrip("/")
     )
 
@@ -186,11 +194,11 @@ class ShopifyCredentials:
     @classmethod
     def from_env(cls) -> "ShopifyCredentials":
         return cls(
-            store_domain=_clean_domain(os.environ.get("SHOPIFY_STORE_DOMAIN", "")),
-            admin_token=os.environ.get("SHOPIFY_ADMIN_TOKEN", "").strip(),
-            client_id=os.environ.get("SHOPIFY_CLIENT_ID", "").strip(),
-            client_secret=os.environ.get("SHOPIFY_CLIENT_SECRET", "").strip(),
-            api_version=os.environ.get("SHOPIFY_API_VERSION", DEFAULT_API_VERSION).strip()
+            store_domain=_clean_domain(_shopify_setting("SHOPIFY_STORE_DOMAIN")),
+            admin_token=_shopify_setting("SHOPIFY_ADMIN_TOKEN"),
+            client_id=_shopify_setting("SHOPIFY_CLIENT_ID"),
+            client_secret=_shopify_setting("SHOPIFY_CLIENT_SECRET"),
+            api_version=_shopify_setting("SHOPIFY_API_VERSION", DEFAULT_API_VERSION)
             or DEFAULT_API_VERSION,
         )
 

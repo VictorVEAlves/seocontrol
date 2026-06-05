@@ -329,3 +329,24 @@ def test_request_admin_token_uses_client_credentials_and_cache(monkeypatch, tmp_
     assert calls[0]["data"]["grant_type"] == "client_credentials"
     assert calls[0]["data"]["client_id"] == "client-id"
     assert calls[0]["data"]["client_secret"] == "client-secret"
+
+
+def test_shopify_credentials_read_runtime_site_config(monkeypatch):
+    monkeypatch.delenv("SHOPIFY_STORE_DOMAIN", raising=False)
+    monkeypatch.delenv("SHOPIFY_CLIENT_ID", raising=False)
+    monkeypatch.delenv("SHOPIFY_CLIENT_SECRET", raising=False)
+    shopify_seo.set_runtime_site_config({
+        "SHOPIFY_STORE_DOMAIN": "runtime-store.myshopify.com",
+        "SHOPIFY_CLIENT_ID": "runtime-client",
+        "SHOPIFY_CLIENT_SECRET": "runtime-secret",
+        "SHOPIFY_API_VERSION": "2026-04",
+    })
+
+    try:
+        credentials = shopify_seo.ShopifyCredentials.from_env()
+    finally:
+        shopify_seo.clear_runtime_site_config()
+
+    assert credentials.store_domain == "runtime-store.myshopify.com"
+    assert credentials.client_id == "runtime-client"
+    assert credentials.client_secret == "runtime-secret"
