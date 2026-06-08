@@ -1,6 +1,7 @@
 import pandas as pd
 
 from collectors import gsc
+from modules import gsc_analyzer
 
 
 def _configure_terms(monkeypatch):
@@ -60,3 +61,41 @@ def test_pure_brand_queries_are_not_ctr_tasks(tmp_path, monkeypatch):
     assert "tenis lacoste" not in ctr_queries
     assert "lacoste" not in content_queries
     assert "tenis lacoste" in content_queries
+
+
+def test_run_from_api_respects_top_limit(monkeypatch):
+    _configure_terms(monkeypatch)
+    queries = [
+        {
+            "query": f"tenis lacoste {i}",
+            "clicks": i,
+            "impressions": 1000 - i,
+            "ctr": 1.0,
+            "position": 5.0,
+        }
+        for i in range(30)
+    ]
+    pages = [
+        {
+            "page": f"/produto-{i}",
+            "clicks": i,
+            "impressions": 1000 - i,
+            "ctr": 1.0,
+            "position": 5.0,
+        }
+        for i in range(30)
+    ]
+
+    result = gsc_analyzer.run_from_api(queries, pages, top_limit=25)
+
+    assert result["top_limit"] == 25
+    assert len(result["top_queries"]) == 25
+    assert len(result["top_pages"]) == 25
+
+
+def test_full_audit_gsc_limit_follows_selected_scope():
+    import app as dashboard
+
+    assert dashboard._full_audit_gsc_limit("priority") == 100
+    assert dashboard._full_audit_gsc_limit("500") == 500
+    assert dashboard._full_audit_gsc_limit("2000") == 2000

@@ -194,11 +194,19 @@ def _full_url(url: str) -> str:
 
 # ── Module runners ────────────────────────────────────────────────────────────
 
-def run_gsc(folder: str = None, urls: list = None) -> dict:
+def run_gsc(folder: str = None, urls: list = None, top_limit: int = 20, api_limit: int | None = None) -> dict:
     focused = f" (filtrado para {len(urls)} URLs)" if urls else ""
     print(f"  Analisando GSC{focused}...")
 
     result = None
+    try:
+        top_limit = max(1, min(5000, int(top_limit or 20)))
+    except Exception:
+        top_limit = 20
+    try:
+        api_fetch_limit = max(500, min(5000, int(api_limit or top_limit)))
+    except Exception:
+        api_fetch_limit = max(500, top_limit)
 
     # Try GSC API first (live data, no CSV needed)
     if _has_gsc_credentials():
@@ -206,9 +214,9 @@ def run_gsc(folder: str = None, urls: list = None) -> dict:
             from modules import gsc_api as _gsc_api
             from modules.gsc_analyzer import run_from_api
             print("   via API GSC (ao vivo)...")
-            raw = _gsc_api.fetch_raw(limit=500)
+            raw = _gsc_api.fetch_raw(limit=api_fetch_limit)
             if "error" not in raw:
-                result = run_from_api(raw["queries"], raw["pages"], raw.get("time_series"))
+                result = run_from_api(raw["queries"], raw["pages"], raw.get("time_series"), top_limit=top_limit)
                 print(f"   ok {len(raw['queries'])} queries | {len(raw['pages'])} paginas carregadas via API")
             else:
                 print(f"   ! API GSC: {raw['error']} — usando CSV como fallback")
@@ -223,7 +231,7 @@ def run_gsc(folder: str = None, urls: list = None) -> dict:
     if result is None:
         _folder = folder or GSC_EXPORT_FOLDER
         from collectors import gsc
-        result = gsc.run(_folder)
+        result = gsc.run(_folder, top_limit=top_limit)
         if "error" in result:
             print(f"   x {result['error']}")
             return {}

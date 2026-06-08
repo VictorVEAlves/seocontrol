@@ -407,7 +407,15 @@ def cannibalization_hints(paginas: pd.DataFrame) -> pd.DataFrame:
 
 # ── API-based entry point ─────────────────────────────────────────────────────
 
-def run_from_api(queries_rows: list, pages_rows: list, time_series: list = None) -> dict:
+def _safe_top_limit(top_limit: int = 20) -> int:
+    try:
+        value = int(top_limit or 20)
+    except Exception:
+        value = 20
+    return max(1, min(5000, value))
+
+
+def run_from_api(queries_rows: list, pages_rows: list, time_series: list = None, top_limit: int = 20) -> dict:
     """Same analysis as run() but from GSC API row dicts (gsc_api.fetch_raw output).
 
     Expects CTR already in percentage form (0-100) as produced by fetch_raw().
@@ -415,6 +423,8 @@ def run_from_api(queries_rows: list, pages_rows: list, time_series: list = None)
     results = {"source": "api"}
     queries_clean = None
     pages_clean   = None
+    top_limit = _safe_top_limit(top_limit)
+    results["top_limit"] = top_limit
 
     if queries_rows:
         q = pd.DataFrame(queries_rows)
@@ -426,7 +436,7 @@ def run_from_api(queries_rows: list, pages_rows: list, time_series: list = None)
                 q[col] = pd.to_numeric(q[col], errors="coerce").fillna(0.0)
         queries_clean = q
         results["total_queries"]      = len(q)
-        results["top_queries"]        = q.nlargest(20, "impressions").to_dict("records")
+        results["top_queries"]        = q.nlargest(top_limit, "impressions").to_dict("records")
         results["ctr_opps"]           = ctr_opportunities(q).to_dict("records")
         results["content_opps"]       = query_content_opportunities(q).to_dict("records")
         results["pos_opps"]           = position_opportunities(q).to_dict("records")
@@ -443,7 +453,7 @@ def run_from_api(queries_rows: list, pages_rows: list, time_series: list = None)
                 p[col] = pd.to_numeric(p[col], errors="coerce").fillna(0.0)
         pages_clean = p
         results["total_pages"]     = len(p)
-        results["top_pages"]       = p.nlargest(20, "impressions").to_dict("records")
+        results["top_pages"]       = p.nlargest(top_limit, "impressions").to_dict("records")
         results["low_ctr_pages"]   = low_ctr_pages(p).to_dict("records")
         results["cannibalization"] = cannibalization_hints(p).to_dict("records")
 
@@ -460,18 +470,20 @@ def run_from_api(queries_rows: list, pages_rows: list, time_series: list = None)
 
 # ── CSV-based entry point ─────────────────────────────────────────────────────
 
-def run(folder: str) -> dict:
+def run(folder: str, top_limit: int = 20) -> dict:
     raw = load_folder(folder)
     if not raw:
         return {"error": f"Nenhum CSV encontrado em '{folder}'"}
 
     results = {"folder": folder, "files_found": list(raw.keys())}
+    top_limit = _safe_top_limit(top_limit)
+    results["top_limit"] = top_limit
 
     if "consultas" in raw:
         q = _clean_df(raw["consultas"], "consultas")
         queries_clean = q
         results["total_queries"] = len(q)
-        results["top_queries"]   = q.nlargest(20, "impressions").to_dict("records")
+        results["top_queries"]   = q.nlargest(top_limit, "impressions").to_dict("records")
         results["ctr_opps"]      = ctr_opportunities(q).to_dict("records")
         results["content_opps"]  = query_content_opportunities(q).to_dict("records")
         results["pos_opps"]      = position_opportunities(q).to_dict("records")
@@ -482,7 +494,7 @@ def run(folder: str) -> dict:
         p = _clean_df(raw["paginas"], "paginas")
         pages_clean = p
         results["total_pages"]      = len(p)
-        results["top_pages"]        = p.nlargest(20, "impressions").to_dict("records")
+        results["top_pages"]        = p.nlargest(top_limit, "impressions").to_dict("records")
         results["low_ctr_pages"]    = low_ctr_pages(p).to_dict("records")
         results["cannibalization"]  = cannibalization_hints(p).to_dict("records")
 

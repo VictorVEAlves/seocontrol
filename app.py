@@ -6000,6 +6000,16 @@ def _audit_scope_config(scope_key: str | None) -> tuple[str, dict]:
     return key, dict(_AUDIT_SCOPE_OPTIONS[key])
 
 
+def _full_audit_gsc_limit(scope_key: str | None) -> int:
+    _key, option = _audit_scope_config(scope_key)
+    requested = option.get("limit") or 100
+    try:
+        requested = int(requested)
+    except Exception:
+        requested = 100
+    return max(100, min(2000, requested))
+
+
 def _select_full_audit_pages(scope_key: str) -> tuple[list[str], dict]:
     from config import get_brand_clusters, get_priority_pages
     from modules.crawler import normalize_url
@@ -6118,10 +6128,11 @@ def _run_full_audit(job_id: str, q: _queue_mod.Queue, scope_key: str = "priority
     results: dict = {}
 
     # ── Step 1: GSC ──────────────────────────────────────────────────────────
-    emit("gsc", "GSC — Queries & Páginas", "running", "Buscando dados ao vivo...")
+    gsc_limit = _full_audit_gsc_limit(scope_key)
+    emit("gsc", "GSC — Queries & Páginas", "running", f"Buscando até {gsc_limit} queries e páginas...")
     try:
         from run import run_gsc
-        gsc_data = run_gsc()
+        gsc_data = run_gsc(top_limit=gsc_limit, api_limit=gsc_limit)
         results["gsc"] = gsc_data
         emit("gsc", "GSC — Queries & Páginas", "ok",
              f"{len(gsc_data.get('top_queries',[]))} queries · "
