@@ -757,19 +757,6 @@ def styles() -> str:
     }
     .sidebar-brand .logo-text { color: #f8f5ee; font-weight: 800; font-size: 14px; line-height: 1.2; letter-spacing:.01em; }
     .sidebar-brand .logo-sub { color: #aaa59a; font-size: 11px; margin-top: 1px; }
-    .sidebar-env {
-      margin: 10px 0 0;
-      padding: 4px 8px;
-      background: rgba(214,178,94,.10);
-      border: 1px solid rgba(214,178,94,.22);
-      border-radius: 6px;
-      color: #cbb275;
-      font-size: 10px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: .06em;
-      display: inline-block;
-    }
     .sidebar-cta {
       margin: 12px 14px 4px;
     }
@@ -1320,7 +1307,7 @@ def page_shell(title: str, body: str, active: str = "") -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{esc(title)} — SEO Control Center</title>
+  <title>{esc(title)} — SEO Control</title>
   {styles()}
 </head>
 <body>
@@ -1334,7 +1321,6 @@ def page_shell(title: str, body: str, active: str = "") -> str:
           <div class="logo-sub" title="{esc(_site_name)}" style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{esc(_site_name)}</div>
         </div>
       </div>
-      <div class="sidebar-env">&#9679; Local</div>
     </div>
     <nav class="nav-section">
       <div class="nav-label">Principal</div>
@@ -1529,15 +1515,18 @@ def _tool_setup_error(module: str) -> str:
 def format_job_output(job: dict) -> str:
     if not job:
         return "Job não encontrado."
-    output = f"Status: {job.get('status', '?')}\n"
-    if job.get("command"):
-        output += f"Comando: {job['command']}\n"
-    output += "\n"
+    status = str(job.get("status") or "running")
+    label = {
+        "running": "Executando",
+        "completed": "Concluído",
+        "failed": "Falhou",
+    }.get(status, "Processando")
+    output = f"{label}\n\n"
     if job.get("error"):
         output += f"Erro: {job['error']}\n"
     output += job.get("stdout", "")
     if job.get("stderr"):
-        output += f"\n\nSTDERR:\n{job['stderr']}"
+        output += f"\n\nDetalhes do erro:\n{job['stderr']}"
     return output
 
 
@@ -1655,7 +1644,7 @@ def _auth_shell(title: str, body: str) -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{esc(title)} — SEO Control Center</title>
+  <title>{esc(title)} — SEO Control</title>
   {styles()}
 </head>
 <body>
@@ -5989,7 +5978,7 @@ def report_view():
         no_data_html = """
 <div class="no-insights">
   <h3>Relatório sem dados de auditoria</h3>
-  <p>Este snapshot não contém dados de GSC, on-page ou backlog.<br>
+  <p>Este relatório não contém dados de GSC, on-page ou backlog.<br>
      Rode <a href="/tools">uma auditoria completa</a> para ver resultados aqui.</p>
 </div>"""
 
@@ -7308,7 +7297,7 @@ def deep_audit_report(job_id):
 <div class="section-head">
   <div>
     <h1>Crawler Profundo</h1>
-    <p class="muted" style="margin-top:4px">Status: {esc(status_label)} &middot; {esc(R.get("completed_at", ""))}</p>
+    <p class="muted" style="margin-top:4px">Situação: {esc(status_label)} &middot; {esc(R.get("completed_at", ""))}</p>
   </div>
   <a href="/full-audit?new=1" class="btn btn-primary">Nova varredura</a>
 </div>

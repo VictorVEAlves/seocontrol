@@ -12,6 +12,8 @@ def test_sidebar_prioritizes_dashboard(monkeypatch):
     assert 'href="/full-audit?new=1"' in html
     assert html.index("Dashboard") < html.index("Nova Auditoria")
     assert html.index("Dashboard") < html.index("Auditoria Completa")
+    assert "Local" not in html
+    assert "SEO Control Center" not in html
 
 
 def test_sidebar_settings_footer_uses_nav_colors(monkeypatch):
