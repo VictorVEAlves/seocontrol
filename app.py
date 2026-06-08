@@ -2760,7 +2760,10 @@ def blog_ideas():
         impr_fmt = f"{int(impr):,}".replace(",", ".") if impr else "—"
 
         cards_html += f"""
-<div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:20px 24px;margin-bottom:12px;display:flex;gap:20px;align-items:flex-start">
+<div data-blog-idea-card="{row_id}" style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:20px 24px;margin-bottom:12px;display:flex;gap:16px;align-items:flex-start">
+  <div style="flex-shrink:0;padding-top:4px">
+    <input type="checkbox" class="blog-idea-check" data-id="{row_id}" onchange="toggleBlogIdea(this)" aria-label="Selecionar ideia">
+  </div>
   <div style="flex:1;min-width:0">
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
       <span class="badge {badge_cls}">{badge_label}</span>
@@ -2774,8 +2777,9 @@ def blog_ideas():
     {f'<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px">{query_tags}</div>' if query_tags else ''}
     {f'<div style="display:flex;flex-wrap:wrap;gap:4px">{section_tags}</div>' if section_tags else ''}
   </div>
-  <div style="flex-shrink:0;padding-top:4px">
+  <div style="flex-shrink:0;padding-top:4px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end">
     <button class="btn btn-sm btn-primary" onclick="openBlogContent('{row_id}','{row_title}',{str(has_content).lower()})">{btn_icon} {btn_label}</button>
+    <button class="btn btn-sm btn-ghost blog-danger-action" onclick="deleteBlogIdea('{row_id}')">Apagar</button>
   </div>
 </div>"""
 
@@ -2816,6 +2820,12 @@ def blog_ideas():
 <style>
 .gen-tab{padding:10px 18px;border:none;background:none;cursor:pointer;font-size:13px;font-weight:500;color:#6b7280;border-bottom:2px solid transparent}
 .gen-tab-active{color:var(--brand);border-bottom-color:var(--brand)}
+.blog-danger-action{color:#991b1b;border-color:#fecaca;background:#fff}
+.blog-danger-action:hover{background:#fef2f2;color:#991b1b;text-decoration:none}
+.blog-danger-action:disabled{opacity:.45;cursor:not-allowed}
+.blog-selection-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:12px 16px;margin-bottom:14px}
+.blog-selection-bar label{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted);font-weight:700}
+.blog-selection-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 #gen-preview h1{font-size:26px;font-weight:700;line-height:1.3;margin:0 0 12px}
 #gen-preview h2{font-size:20px;font-weight:700;margin:32px 0 10px;color:#111827;border-bottom:2px solid #f3f4f6;padding-bottom:6px}
 #gen-preview h3{font-size:17px;font-weight:600;margin:22px 0 8px;color:#374151}
@@ -3061,7 +3071,88 @@ function regenerateContent() {
   _setLoadingMsg('Regenerando conteudo com IA...', 'O conteudo salvo sera substituido.');
   _doFetch(_genCurrentId, _genCurrentTitle, true);
 }
+
+var _selectedBlogIdeas = new Set();
+
+function _blogToast(message, type) {
+  if (typeof showToast === 'function') {
+    showToast(message, type || 'success');
+  }
+}
+
+function updateBlogIdeaSelection() {
+  var count = _selectedBlogIdeas.size;
+  var countEl = document.getElementById('blog-selected-count');
+  var deleteBtn = document.getElementById('blog-delete-selected-btn');
+  var selectAll = document.getElementById('blog-select-all');
+  var checks = Array.from(document.querySelectorAll('.blog-idea-check'));
+  if (countEl) countEl.textContent = count;
+  if (deleteBtn) deleteBtn.disabled = count === 0;
+  if (selectAll) selectAll.checked = checks.length > 0 && checks.every(function(input) { return input.checked; });
+}
+
+function toggleBlogIdea(input) {
+  if (!input || !input.dataset) return;
+  if (input.checked) _selectedBlogIdeas.add(input.dataset.id);
+  else _selectedBlogIdeas.delete(input.dataset.id);
+  updateBlogIdeaSelection();
+}
+
+function toggleAllBlogIdeas(input) {
+  _selectedBlogIdeas = new Set();
+  document.querySelectorAll('.blog-idea-check').forEach(function(check) {
+    check.checked = !!input.checked;
+    if (check.checked) _selectedBlogIdeas.add(check.dataset.id);
+  });
+  updateBlogIdeaSelection();
+}
+
+async function deleteBlogIdeas(ids) {
+  var selected = (ids || []).filter(Boolean);
+  if (!selected.length) {
+    _blogToast('Selecione ao menos uma ideia para apagar.', 'error');
+    return;
+  }
+  try {
+    var res = await fetch('/blog-ideas/delete', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ids: selected})
+    });
+    var data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || 'Falha ao apagar ideias.');
+    _blogToast((data.deleted || 0) + ' ideia(s) apagada(s).', 'success');
+    setTimeout(function() { location.reload(); }, 350);
+  } catch (err) {
+    _blogToast(err.message, 'error');
+  }
+}
+
+function deleteSelectedBlogIdeas() {
+  var ids = Array.from(_selectedBlogIdeas);
+  if (!ids.length) {
+    _blogToast('Selecione ao menos uma ideia para apagar.', 'error');
+    return;
+  }
+  if (!confirm('Apagar ' + ids.length + ' ideia(s) de blog?')) return;
+  deleteBlogIdeas(ids);
+}
+
+function deleteBlogIdea(id) {
+  if (!id) return;
+  if (!confirm('Apagar esta ideia de blog?')) return;
+  deleteBlogIdeas([id]);
+}
 </script>"""
+
+    controls_html = """
+<div class="blog-selection-bar">
+  <label><input type="checkbox" id="blog-select-all" onchange="toggleAllBlogIdeas(this)"> Selecionar todas nesta página</label>
+  <div class="blog-selection-actions">
+    <span class="muted"><span id="blog-selected-count">0</span> selecionada(s)</span>
+    <button class="btn btn-sm btn-ghost blog-danger-action" id="blog-delete-selected-btn" onclick="deleteSelectedBlogIdeas()" disabled>Apagar selecionadas</button>
+  </div>
+</div>""" if cards_html else ""
 
     empty = '<div style="text-align:center;color:var(--muted);padding:48px 0">Nenhuma ideia salva. Use <a href="/tools?module=blog-ideas">Ferramentas → Ideias de Blog</a> para gerar.</div>'
     body = f"""
@@ -3071,9 +3162,53 @@ function regenerateContent() {
   <a href="/tools?module=blog-ideas" class="btn btn-primary">+ Gerar ideias</a>
 </div>
 <p class="muted" style="margin-bottom:20px">Geradas a partir das queries do GSC com Gemini. Clique em <strong>Gerar conteúdo</strong> para criar o post completo.</p>
+{controls_html}
 {cards_html or empty}
 {_pagination_html(page, total, PAGE_SIZE, "/blog-ideas?")}"""
     return page_shell("Ideias de Blog", body)
+
+
+@app.route("/blog-ideas/delete", methods=["POST"])
+def blog_ideas_delete():
+    data = request.get_json(silent=True) or {}
+    ids = [str(item).strip() for item in data.get("ids") or [] if str(item).strip()]
+    if not ids:
+        return jsonify({"ok": False, "error": "Selecione ao menos uma ideia para apagar."}), 400
+
+    try:
+        sb = get_supabase()
+        site_id = _current_site_id()
+        if _is_authenticated() and not site_id:
+            return jsonify({"ok": False, "error": "Cadastre um site antes de apagar ideias de blog."}), 400
+
+        deleted = 0
+        for idea_id in ids:
+            select_query = (
+                sb.table("content_changes")
+                .select("id")
+                .eq("id", idea_id)
+                .ilike("provider", "query_suggester%")
+            )
+            if site_id:
+                select_query = select_query.eq("site_id", site_id)
+            existing = select_query.execute().data or []
+            if not existing:
+                continue
+
+            delete_query = (
+                sb.table("content_changes")
+                .delete()
+                .eq("id", idea_id)
+                .ilike("provider", "query_suggester%")
+            )
+            if site_id:
+                delete_query = delete_query.eq("site_id", site_id)
+            delete_query.execute()
+            deleted += len(existing)
+
+        return jsonify({"ok": True, "deleted": deleted})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 503
 
 
 @app.route("/blog-ideas/<idea_id>/content", methods=["GET"])

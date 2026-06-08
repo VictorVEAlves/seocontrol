@@ -13,9 +13,14 @@ class _FakeContentQuery:
         self.action = action
         self.payload = payload
         self.filters = {}
+        self.single_result = False
 
     def select(self, *args, **kwargs):
         self.action = "select"
+        return self
+
+    def delete(self):
+        self.action = "delete"
         return self
 
     def update(self, payload):
@@ -37,6 +42,7 @@ class _FakeContentQuery:
         return self
 
     def single(self):
+        self.single_result = True
         return self
 
     def execute(self):
@@ -50,7 +56,10 @@ class _FakeContentQuery:
             row = self.store["rows"].get(idea_id)
             if row is None:
                 raise RuntimeError("not found")
-            return _FakeResult(row)
+            if self.action == "delete":
+                del self.store["rows"][idea_id]
+                return _FakeResult([row])
+            return _FakeResult(row if self.single_result else [row])
         return _FakeResult(list(self.store["rows"].values()), count=len(self.store["rows"]))
 
 
@@ -141,3 +150,44 @@ def test_blog_ideas_page_opens_saved_content_when_html_exists(monkeypatch):
 
     assert "Ver conteúdo" in html
     assert "openBlogContent('idea-3','Moda para o Inverno',true)" in html
+    assert "deleteBlogIdea('idea-3')" in html
+    assert "Apagar selecionadas" in html
+    assert "blog-idea-check" in html
+
+
+def test_blog_ideas_delete_removes_selected_ideas(monkeypatch):
+    monkeypatch.setenv("AUTH_REQUIRED", "0")
+    fake = _FakeSupabase({
+        "idea-4": {
+            "id": "idea-4",
+            "status": "idea",
+            "provider": "query_suggester",
+            "meta_title": "Ideia antiga",
+            "raw": {},
+        },
+        "idea-5": {
+            "id": "idea-5",
+            "status": "idea",
+            "provider": "query_suggester",
+            "meta_title": "Ideia mantida",
+            "raw": {},
+        },
+    })
+    monkeypatch.setattr(dashboard, "get_supabase", lambda: fake)
+
+    response = dashboard.app.test_client().post("/blog-ideas/delete", json={"ids": ["idea-4"]})
+    data = response.get_json()
+
+    assert response.status_code == 200
+    assert data["deleted"] == 1
+    assert "idea-4" not in fake.store["rows"]
+    assert "idea-5" in fake.store["rows"]
+
+
+def test_blog_ideas_delete_requires_selection(monkeypatch):
+    monkeypatch.setenv("AUTH_REQUIRED", "0")
+
+    response = dashboard.app.test_client().post("/blog-ideas/delete", json={"ids": []})
+
+    assert response.status_code == 400
+    assert "Selecione" in response.get_json()["error"]
