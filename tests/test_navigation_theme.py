@@ -14,6 +14,18 @@ def test_sidebar_prioritizes_dashboard(monkeypatch):
     assert html.index("Dashboard") < html.index("Auditoria Completa")
 
 
+def test_sidebar_settings_footer_uses_nav_colors(monkeypatch):
+    monkeypatch.setattr(dashboard, "get_site_name", lambda: "Cliente Premium")
+    monkeypatch.setattr(dashboard, "_current_user_email", lambda: "cliente@example.com")
+
+    with dashboard.app.test_request_context("/settings"):
+        html = dashboard.page_shell("Teste", "<div>Conteudo</div>")
+
+    assert '<div class="sidebar-footer">\n      <nav class="nav">' in html
+    assert 'href="/settings" class="active"' in html
+    assert "color:#c4c0b8" in html
+
+
 def test_theme_uses_premium_palette():
     css = dashboard.styles()
 

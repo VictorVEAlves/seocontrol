@@ -154,6 +154,21 @@ def _current_user_email() -> str:
     return str(session.get("user_email") or "")
 
 
+def _current_user_metadata() -> dict:
+    metadata = session.get("user_metadata")
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _current_user_name() -> str:
+    metadata = _current_user_metadata()
+    return str(
+        metadata.get("display_name")
+        or metadata.get("full_name")
+        or metadata.get("name")
+        or ""
+    ).strip()
+
+
 def _current_site_id() -> str:
     return str(session.get("active_site_id") or "")
 
@@ -1296,8 +1311,8 @@ def page_shell(title: str, body: str, active: str = "") -> str:
     _logo_init = (_site_name[:2].upper()) if _site_name else "SE"
     _user_email = _current_user_email()
     _auth_footer = (
-        f'<div style="font-size:11px;color:var(--muted);margin-bottom:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="{esc(_user_email)}">{esc(_user_email)}</div>'
-        f'<a href="/logout" style="font-size:12px;color:var(--muted);text-decoration:none">Sair</a>'
+        f'<div style="font-size:11px;color:#aaa59a;margin:8px 0 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="{esc(_user_email)}">{esc(_user_email)}</div>'
+        f'<a href="/logout" style="font-size:12px;color:#c4c0b8;text-decoration:none">Sair</a>'
         if _user_email else ""
     )
     return f"""<!doctype html>
@@ -1350,7 +1365,9 @@ def page_shell(title: str, body: str, active: str = "") -> str:
       </nav>
     </nav>
     <div class="sidebar-footer">
-      {nav_link("/settings", "Configurações", "settings")}
+      <nav class="nav">
+        {nav_link("/settings", "Configurações", "settings")}
+      </nav>
       {_auth_footer}
     </div>
   </aside>
@@ -1788,12 +1805,54 @@ def _store_auth_session(auth_response) -> bool:
     auth_session = getattr(auth_response, "session", None)
     if not user or not auth_session:
         return False
+    metadata = getattr(user, "user_metadata", None)
+    if not isinstance(metadata, dict):
+        metadata = {}
     session["user_id"] = str(getattr(user, "id", "") or "")
     session["user_email"] = str(getattr(user, "email", "") or "")
+    session["user_metadata"] = metadata
     session["access_token"] = str(getattr(auth_session, "access_token", "") or "")
     session["refresh_token"] = str(getattr(auth_session, "refresh_token", "") or "")
     session["auth_project_url"] = os.environ.get("SUPABASE_URL", "")
     return bool(session.get("user_id"))
+
+
+def _sync_auth_session_from_response(auth_response, fallback_metadata: dict | None = None, fallback_email: str = "") -> None:
+    user = getattr(auth_response, "user", None)
+    auth_session = getattr(auth_response, "session", None)
+    if user:
+        user_id = str(getattr(user, "id", "") or "")
+        user_email = str(getattr(user, "email", "") or "")
+        metadata = getattr(user, "user_metadata", None)
+        if user_id:
+            session["user_id"] = user_id
+        if user_email:
+            session["user_email"] = user_email
+        elif fallback_email:
+            session["user_email"] = fallback_email
+        session["user_metadata"] = metadata if isinstance(metadata, dict) else (fallback_metadata or {})
+    elif fallback_metadata is not None:
+        session["user_metadata"] = fallback_metadata
+        if fallback_email:
+            session["user_email"] = fallback_email
+    if auth_session:
+        access_token = str(getattr(auth_session, "access_token", "") or "")
+        refresh_token = str(getattr(auth_session, "refresh_token", "") or "")
+        if access_token:
+            session["access_token"] = access_token
+        if refresh_token:
+            session["refresh_token"] = refresh_token
+
+
+def _auth_client_from_session() -> Client:
+    access_token = str(session.get("access_token") or "").strip()
+    refresh_token = str(session.get("refresh_token") or "").strip()
+    if not access_token or not refresh_token:
+        raise RuntimeError("Sessao de autenticacao expirada. Faca login novamente.")
+    auth_client = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+    auth_response = auth_client.auth.set_session(access_token, refresh_token)
+    _sync_auth_session_from_response(auth_response)
+    return auth_client
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -8087,6 +8146,52 @@ def settings():
             else:
                 msgs.append(("Nenhuma chave alterada (campos em branco mantêm o valor atual).", "info"))
 
+        elif action == "user":
+            if not _is_authenticated():
+                msgs.append(("Faça login para alterar os dados do usuário.", "bad"))
+            else:
+                display_name = request.form.get("display_name", "").strip()
+                email = request.form.get("user_email", "").strip()
+                password = request.form.get("user_password", "")
+                confirm_password = request.form.get("user_password_confirm", "")
+
+                if not email:
+                    msgs.append(("Informe um e-mail válido para a conta.", "bad"))
+                elif password or confirm_password:
+                    if len(password) < 6:
+                        msgs.append(("A nova senha precisa ter pelo menos 6 caracteres.", "bad"))
+                    elif password != confirm_password:
+                        msgs.append(("As senhas não conferem.", "bad"))
+
+                if not any(t == "bad" for _text, t in msgs):
+                    metadata = dict(_current_user_metadata())
+                    metadata["display_name"] = display_name
+                    metadata["full_name"] = display_name
+                    payload = {"data": metadata}
+                    email_changed = email.lower() != _current_user_email().lower()
+                    if email_changed:
+                        payload["email"] = email
+                    if password:
+                        payload["password"] = password
+
+                    try:
+                        auth_client = _auth_client_from_session()
+                        update_response = auth_client.auth.update_user(payload)
+                        _sync_auth_session_from_response(
+                            update_response,
+                            fallback_metadata=metadata,
+                            fallback_email=email if not email_changed else "",
+                        )
+                        if email_changed:
+                            msgs.append((
+                                "Dados do usuário salvos. Se o Supabase exigir confirmação, valide o novo e-mail antes de usá-lo no login.",
+                                "ok",
+                            ))
+                        else:
+                            msgs.append(("Dados do usuário salvos.", "ok"))
+                    except Exception as exc:
+                        msgs.append((f"Erro ao salvar dados do usuário: {exc}", "bad"))
+
     # ── Flash messages from OAuth redirect ───────────────────────────────────
     for kind in ("gsc_ok", "gsc_err"):
         val = session.pop(kind, None)
@@ -8283,6 +8388,56 @@ def settings():
         else "Deixe o campo em branco para manter a chave atual. As chaves ficam salvas no arquivo <code>.env</code> e nunca aparecem completas na tela."
     )
 
+    user_panel = ""
+    if _is_authenticated():
+        user_panel = f"""
+  <div class="panel">
+    <h2 style="margin-bottom:4px">Conta do usuário</h2>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:16px">
+      Atualize seus dados de acesso. Para trocar a senha, preencha apenas os campos de nova senha.
+    </p>
+    <form method="POST">
+      <input type="hidden" name="action" value="user">
+      <div style="display:flex;flex-direction:column;gap:14px">
+        <div>
+          <label style="display:block;font-size:12px;font-weight:700;color:var(--muted);
+                         margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">Nome</label>
+          <input name="display_name" type="text" value="{esc(_current_user_name())}"
+            placeholder="Seu nome ou nome da conta"
+            autocomplete="name"
+            style="width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:6px;font-size:14px;color:var(--ink)"/>
+        </div>
+        <div>
+          <label style="display:block;font-size:12px;font-weight:700;color:var(--muted);
+                         margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">E-mail</label>
+          <input name="user_email" type="email" value="{esc(_current_user_email())}"
+            required autocomplete="email"
+            style="width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:6px;font-size:14px;color:var(--ink)"/>
+          <p style="font-size:11px;color:var(--muted);margin-top:4px">A troca de e-mail pode exigir confirmação pelo Supabase.</p>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div>
+            <label style="display:block;font-size:12px;font-weight:700;color:var(--muted);
+                           margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">Nova senha</label>
+            <input name="user_password" type="password" autocomplete="new-password" minlength="6"
+              placeholder="Opcional"
+              style="width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:6px;font-size:14px;color:var(--ink)"/>
+          </div>
+          <div>
+            <label style="display:block;font-size:12px;font-weight:700;color:var(--muted);
+                           margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">Confirmar senha</label>
+            <input name="user_password_confirm" type="password" autocomplete="new-password" minlength="6"
+              placeholder="Repita a senha"
+              style="width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:6px;font-size:14px;color:var(--ink)"/>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top:18px">
+        <button type="submit" class="btn btn-primary">Salvar dados do usuário</button>
+      </div>
+    </form>
+  </div>"""
+
     body = f"""
 <div class="section-head" style="margin-bottom:24px">
   <h1>Configurações</h1>
@@ -8290,6 +8445,7 @@ def settings():
 {_msg_html(msgs)}
 
 <div style="max-width:700px;display:flex;flex-direction:column;gap:20px">
+  {user_panel}
   {site_switcher}
 
   <!-- ── Panel 1: Site + GSC ─────────────────────────────────────── -->
