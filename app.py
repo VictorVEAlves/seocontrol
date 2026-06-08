@@ -134,7 +134,9 @@ def get_supabase_public() -> Client:
 
 PUBLIC_PATHS = {
     "/healthz",
+    "/forgot-password",
     "/login",
+    "/reset-password",
     "/signup",
     "/logout",
 }
@@ -1652,6 +1654,14 @@ def _auth_shell(title: str, body: str) -> str:
       {body}
     </div>
   </div>
+  <script>
+    (function() {{
+      var hash = window.location.hash || "";
+      if (hash.indexOf("type=recovery") !== -1 || hash.indexOf("access_token=") !== -1) {{
+        window.location.replace("/reset-password" + hash);
+      }}
+    }})();
+  </script>
 </body>
 </html>"""
 
@@ -1683,8 +1693,94 @@ def _auth_form(title: str, mode: str, error: str = "") -> str:
 </form>
 <div style="text-align:center;margin-top:18px;font-size:13px">
   <a href="{alt_url}" style="color:var(--brand);font-weight:700;text-decoration:none">{alt_label}</a>
+  {('<div style="margin-top:10px"><a href="/forgot-password" style="color:var(--muted);font-size:12px;text-decoration:none">Esqueci minha senha</a></div>' if not is_signup else '')}
 </div>"""
     return _auth_shell(title, body)
+
+
+def _forgot_password_form(message: str = "", error: str = "") -> str:
+    msg_html = (
+        f'<div style="background:var(--ok-bg);border:1px solid var(--ok);color:var(--ok);'
+        f'padding:10px 12px;border-radius:8px;font-size:13px;margin-bottom:14px">{esc(message)}</div>'
+        if message else ""
+    )
+    err_html = (
+        f'<div style="background:var(--bad-bg);border:1px solid var(--bad);color:var(--bad);'
+        f'padding:10px 12px;border-radius:8px;font-size:13px;margin-bottom:14px">{esc(error)}</div>'
+        if error else ""
+    )
+    body = f"""
+<h1 style="font-size:24px;margin-bottom:6px">Redefinir senha</h1>
+<p class="muted" style="margin-bottom:20px">Informe seu e-mail e enviaremos um link seguro para criar uma nova senha.</p>
+{msg_html}
+{err_html}
+<form method="post" action="/forgot-password">
+  <label style="display:block;font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px;text-transform:uppercase">E-mail</label>
+  <input name="email" type="email" required autocomplete="email"
+         style="width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin-bottom:18px">
+  <button class="btn btn-primary" type="submit" style="width:100%;justify-content:center">Enviar link de reset</button>
+</form>
+<div style="text-align:center;margin-top:18px;font-size:13px">
+  <a href="/login" style="color:var(--muted);font-size:12px;text-decoration:none">Voltar para o login</a>
+</div>"""
+    return _auth_shell("Redefinir senha", body)
+
+
+def _reset_password_form(error: str = "") -> str:
+    err_html = (
+        f'<div style="background:var(--bad-bg);border:1px solid var(--bad);color:var(--bad);'
+        f'padding:10px 12px;border-radius:8px;font-size:13px;margin-bottom:14px">{esc(error)}</div>'
+        if error else ""
+    )
+    body = f"""
+<h1 style="font-size:24px;margin-bottom:6px">Criar nova senha</h1>
+<p class="muted" style="margin-bottom:20px">Digite uma nova senha para concluir a recuperação da conta.</p>
+{err_html}
+<div id="reset-token-warning" style="display:none;background:var(--warn-bg);border:1px solid var(--warn);color:var(--warn);padding:10px 12px;border-radius:8px;font-size:13px;margin-bottom:14px">
+  Link de recuperação não encontrado ou expirado. Solicite um novo e-mail de reset.
+</div>
+<form method="post" action="/reset-password" id="reset-password-form">
+  <input type="hidden" name="access_token" id="reset-access-token">
+  <input type="hidden" name="refresh_token" id="reset-refresh-token">
+  <label style="display:block;font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px;text-transform:uppercase">Nova senha</label>
+  <input name="password" type="password" required autocomplete="new-password" minlength="6"
+         style="width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin-bottom:14px">
+  <label style="display:block;font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px;text-transform:uppercase">Confirmar senha</label>
+  <input name="confirm_password" type="password" required autocomplete="new-password" minlength="6"
+         style="width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin-bottom:18px">
+  <button class="btn btn-primary" id="reset-submit" type="submit" style="width:100%;justify-content:center">Salvar nova senha</button>
+</form>
+<div style="text-align:center;margin-top:18px;font-size:13px">
+  <a href="/forgot-password" style="color:var(--muted);font-size:12px;text-decoration:none">Solicitar novo link</a>
+</div>
+<script>
+  (function() {{
+    var hashParams = new URLSearchParams((window.location.hash || "").replace(/^#/, ""));
+    var queryParams = new URLSearchParams(window.location.search || "");
+    var accessToken = hashParams.get("access_token") || queryParams.get("access_token") || "";
+    var refreshToken = hashParams.get("refresh_token") || queryParams.get("refresh_token") || "";
+    var type = hashParams.get("type") || queryParams.get("type") || "";
+    var accessInput = document.getElementById("reset-access-token");
+    var refreshInput = document.getElementById("reset-refresh-token");
+    var warning = document.getElementById("reset-token-warning");
+    var submit = document.getElementById("reset-submit");
+
+    if (accessToken) {{
+      accessInput.value = accessToken;
+      refreshInput.value = refreshToken;
+      if (window.history && window.history.replaceState) {{
+        window.history.replaceState(null, "", "/reset-password");
+      }}
+    }} else if (type !== "recovery") {{
+      warning.style.display = "block";
+      submit.disabled = true;
+    }} else {{
+      warning.style.display = "block";
+      submit.disabled = true;
+    }}
+  }})();
+</script>"""
+    return _auth_shell("Criar nova senha", body)
 
 
 def _store_auth_session(auth_response) -> bool:
@@ -1719,6 +1815,57 @@ def login():
         session.clear()
         notice = notice or "Sessão antiga ou de outro banco detectada. Faça login novamente."
     return _auth_form("Entrar", "login", notice)
+
+
+@app.route("/forgot-password", methods=["GET", "POST"])
+def forgot_password():
+    if request.method == "POST":
+        email = request.form.get("email", "").strip()
+        if not email:
+            return _forgot_password_form(error="Informe o e-mail para receber o link de reset.")
+        try:
+            get_supabase_public().auth.reset_password_for_email(
+                email,
+                {"redirect_to": _public_url_for("reset_password")},
+            )
+            return _forgot_password_form(
+                message="Se esse e-mail existir, enviaremos um link para redefinir sua senha."
+            )
+        except Exception as exc:
+            return _forgot_password_form(error=f"Não foi possível enviar o reset agora: {exc}")
+    if _is_authenticated():
+        return redirect("/")
+    return _forgot_password_form()
+
+
+@app.route("/reset-password", methods=["GET", "POST"])
+def reset_password():
+    if request.method == "POST":
+        access_token = request.form.get("access_token", "").strip()
+        refresh_token = request.form.get("refresh_token", "").strip()
+        password = request.form.get("password", "")
+        confirm = request.form.get("confirm_password", "")
+
+        if not access_token or not refresh_token:
+            return _reset_password_form("Link de recuperação inválido ou expirado. Solicite um novo e-mail de reset.")
+        if len(password) < 6:
+            return _reset_password_form("A senha precisa ter pelo menos 6 caracteres.")
+        if password != confirm:
+            return _reset_password_form("As senhas não conferem.")
+
+        try:
+            recovery_client = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+            recovery_client.auth.set_session(access_token, refresh_token)
+            recovery_client.auth.update_user({"password": password})
+            session.clear()
+            session["auth_notice"] = "Senha alterada com sucesso. Faça login novamente."
+            return redirect("/login")
+        except Exception as exc:
+            return _reset_password_form(f"Não foi possível alterar a senha: {exc}")
+
+    if _is_authenticated():
+        return redirect("/")
+    return _reset_password_form()
 
 
 @app.route("/signup", methods=["GET", "POST"])
