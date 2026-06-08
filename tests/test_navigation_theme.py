@@ -45,3 +45,13 @@ def test_dashboard_data_uses_error_status(monkeypatch):
 
     assert response.status_code == 503
     assert response.get_json()["error"] == "falha simulada"
+
+
+def test_healthz_is_public_and_exposes_release_flags():
+    response = dashboard.app.test_client().get("/healthz")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["ok"] is True
+    assert payload["deep_audit"] is True
+    assert payload["theme"] == "black-premium"

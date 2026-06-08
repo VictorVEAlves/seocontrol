@@ -133,6 +133,7 @@ def get_supabase_public() -> Client:
 
 
 PUBLIC_PATHS = {
+    "/healthz",
     "/login",
     "/signup",
     "/logout",
@@ -157,6 +158,18 @@ def _current_site_id() -> str:
 
 def _has_auth_session() -> bool:
     return bool(session.get("user_id"))
+
+
+@app.route("/healthz")
+def healthz():
+    return jsonify({
+        "ok": True,
+        "app": "seocontrol",
+        "commit": (os.environ.get("VERCEL_GIT_COMMIT_SHA") or "")[:12],
+        "branch": os.environ.get("VERCEL_GIT_COMMIT_REF") or "",
+        "deep_audit": True,
+        "theme": "black-premium",
+    })
 
 
 def _session_matches_current_supabase() -> bool:
