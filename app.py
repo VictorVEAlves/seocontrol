@@ -646,27 +646,27 @@ def styles() -> str:
     return """<style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
     :root {
-      --brand:       #8a1538;
-      --brand-dark:  #5c1027;
-      --brand-light: #fff5f7;
-      --brand-mid:   #ead1d8;
-      --accent:      #c8a15a;
-      --accent-dark: #96753a;
-      --accent-light:#fff7e6;
-      --nav-bg:      #080d18;
-      --nav-border:  #1d2738;
-      --ink:         #111827;
-      --ink-mid:     #374151;
-      --muted:       #6b7280;
-      --line:        #e6dfd4;
-      --line-light:  #f3eee7;
-      --canvas:      #f6f3ee;
-      --panel:       #fffdfa;
-      --surface:     #fffdfa;
-      --surface2:    #f8f3ec;
-      --border:      #e6dfd4;
-      --bg:          #f6f3ee;
-      --hover:       rgba(138,21,56,.055);
+      --brand:       #080808;
+      --brand-dark:  #000000;
+      --brand-light: #f2eee6;
+      --brand-mid:   #d8d0bf;
+      --accent:      #d6b25e;
+      --accent-dark: #9a7a32;
+      --accent-light:#fff6dc;
+      --nav-bg:      #050505;
+      --nav-border:  #191714;
+      --ink:         #0b0d10;
+      --ink-mid:     #30343b;
+      --muted:       #6c7078;
+      --line:        #e1d9cb;
+      --line-light:  #f2eee6;
+      --canvas:      #f2eee7;
+      --panel:       #fffdf9;
+      --surface:     #fffdf9;
+      --surface2:    #f7f1e8;
+      --border:      #e1d9cb;
+      --bg:          #f2eee7;
+      --hover:       rgba(8,8,8,.055);
       --ok:          #16a34a;
       --ok-bg:       #dcfce7;
       --warn:        #d97706;
@@ -675,9 +675,9 @@ def styles() -> str:
       --bad-bg:      #fee2e2;
       --info:        #2563eb;
       --info-bg:     #dbeafe;
-      --shadow-sm:   0 1px 3px rgba(20,14,8,.07), 0 1px 2px rgba(20,14,8,.04);
-      --shadow-md:   0 8px 22px rgba(20,14,8,.09), 0 2px 6px rgba(20,14,8,.05);
-      --shadow-lg:   0 18px 48px rgba(20,14,8,.13), 0 6px 16px rgba(20,14,8,.07);
+      --shadow-sm:   0 1px 3px rgba(15,12,8,.07), 0 1px 2px rgba(15,12,8,.04);
+      --shadow-md:   0 8px 22px rgba(15,12,8,.10), 0 2px 6px rgba(15,12,8,.05);
+      --shadow-lg:   0 18px 48px rgba(15,12,8,.16), 0 6px 16px rgba(15,12,8,.08);
       --radius:      10px;
       --radius-sm:   6px;
       --radius-lg:   14px;
@@ -698,8 +698,8 @@ def styles() -> str:
       width: 232px;
       flex-shrink: 0;
       background:
-        radial-gradient(circle at 15% 0%, rgba(200,161,90,.16), transparent 28%),
-        linear-gradient(180deg, #0b1020 0%, var(--nav-bg) 44%, #060a12 100%);
+        radial-gradient(circle at 18% -8%, rgba(214,178,94,.18), transparent 30%),
+        linear-gradient(180deg, #0a0a0a 0%, var(--nav-bg) 52%, #020202 100%);
       border-right: 1px solid var(--nav-border);
       display: flex;
       flex-direction: column;
@@ -710,7 +710,7 @@ def styles() -> str:
     }
     .sidebar-brand {
       padding: 18px 16px 14px;
-      border-bottom: 1px solid rgba(200,161,90,.14);
+      border-bottom: 1px solid rgba(214,178,94,.16);
     }
     .sidebar-brand .logo {
       display: flex;
@@ -719,21 +719,21 @@ def styles() -> str:
     }
     .sidebar-brand .logo-icon {
       width: 34px; height: 34px;
-      background: linear-gradient(135deg, var(--brand), #b77755 58%, var(--accent));
+      background: linear-gradient(135deg, #111 0%, #2a2418 48%, var(--accent) 100%);
       border-radius: 9px;
       display: flex; align-items: center; justify-content: center;
-      font-weight: 800; color: #fff; font-size: 13px; flex-shrink: 0;
+      font-weight: 800; color: #fffaf0; font-size: 13px; flex-shrink: 0;
       box-shadow: 0 8px 22px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.22);
     }
-    .sidebar-brand .logo-text { color: #fff7ed; font-weight: 800; font-size: 14px; line-height: 1.2; letter-spacing:.01em; }
-    .sidebar-brand .logo-sub { color: #9ca3af; font-size: 11px; margin-top: 1px; }
+    .sidebar-brand .logo-text { color: #f8f5ee; font-weight: 800; font-size: 14px; line-height: 1.2; letter-spacing:.01em; }
+    .sidebar-brand .logo-sub { color: #aaa59a; font-size: 11px; margin-top: 1px; }
     .sidebar-env {
       margin: 10px 0 0;
       padding: 4px 8px;
-      background: rgba(200,161,90,.09);
-      border: 1px solid rgba(200,161,90,.16);
+      background: rgba(214,178,94,.10);
+      border: 1px solid rgba(214,178,94,.22);
       border-radius: 6px;
-      color: #b8a47c;
+      color: #cbb275;
       font-size: 10px;
       font-weight: 600;
       text-transform: uppercase;
@@ -747,27 +747,28 @@ def styles() -> str:
       display: flex;
       align-items: center;
       gap: 7px;
-      background: linear-gradient(135deg, var(--brand), var(--brand-dark));
+      background: linear-gradient(135deg, #171717, #050505);
       color: #fff !important;
       text-decoration: none;
       padding: 8px 12px;
       border-radius: 8px;
+      border: 1px solid rgba(214,178,94,.28);
       font-size: 12px;
       font-weight: 700;
       letter-spacing: .02em;
       transition: background .15s, opacity .15s;
-      box-shadow: 0 8px 18px rgba(91,16,39,.28);
+      box-shadow: 0 10px 22px rgba(0,0,0,.32);
     }
-    .sidebar-cta a:hover { background: linear-gradient(135deg, #9d1b44, var(--brand-dark)); opacity: 1; text-decoration: none; }
+    .sidebar-cta a:hover { background: linear-gradient(135deg, #242424, #050505); border-color: rgba(214,178,94,.48); opacity: 1; text-decoration: none; }
     .sidebar-cta svg { flex-shrink: 0; opacity: 1; }
     .nav-section { padding: 10px 10px 4px; }
-    .nav-section + .nav-section { border-top: 1px solid rgba(255,255,255,.05); margin-top: 2px; padding-top: 12px; }
-    .nav-label { color: #7f8da3; font-size: 9.5px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; padding: 0 8px; margin-bottom: 3px; }
+    .nav-section + .nav-section { border-top: 1px solid rgba(255,255,255,.065); margin-top: 2px; padding-top: 12px; }
+    .nav-label { color: #817b70; font-size: 9.5px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; padding: 0 8px; margin-bottom: 3px; }
     .nav a {
       display: flex;
       align-items: center;
       gap: 9px;
-      color: #a7b0c0;
+      color: #c4c0b8;
       text-decoration: none;
       padding: 7px 10px;
       border-radius: 7px;
@@ -776,9 +777,9 @@ def styles() -> str:
       transition: background .12s, color .12s;
       border-left: 2px solid transparent;
     }
-    .nav a:hover { background: rgba(255,255,255,.06); color: #fff7ed; text-decoration: none; border-left-color: rgba(200,161,90,.35); }
-    .nav a.active { background: linear-gradient(90deg, rgba(138,21,56,.38), rgba(200,161,90,.08)); color: #fff7ed; font-weight: 700; border-left-color: var(--accent); box-shadow: inset 0 0 0 1px rgba(255,255,255,.03); }
-    .nav a.active .nav-icon { color: var(--accent); opacity: 1; }
+    .nav a:hover { background: rgba(255,255,255,.08); color: #fffaf2; text-decoration: none; border-left-color: rgba(214,178,94,.35); }
+    .nav a.active { background: #e7e2d7; color: #080808; font-weight: 800; border-left-color: var(--accent); box-shadow: 0 10px 24px rgba(0,0,0,.20); }
+    .nav a.active .nav-icon { color: #080808; opacity: 1; }
     .nav-icon { width: 15px; height: 15px; flex-shrink: 0; opacity: .55; }
     .nav a.active .nav-icon { opacity: 1; }
     .nav a:hover .nav-icon { opacity: .8; }
@@ -788,8 +789,8 @@ def styles() -> str:
       font-weight: 700;
       padding: 1px 6px;
       border-radius: 10px;
-      background: rgba(200,161,90,.18);
-      color: #f8d99b;
+      background: rgba(214,178,94,.18);
+      color: #f4d487;
     }
     .sidebar-footer {
       margin-top: auto;
@@ -798,7 +799,7 @@ def styles() -> str:
     }
     .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
     .topbar {
-      background: rgba(255,253,250,.82);
+      background: rgba(255,253,249,.84);
       backdrop-filter: blur(12px);
       border-bottom: 1px solid var(--line);
       padding: 14px 28px;
@@ -924,7 +925,7 @@ def styles() -> str:
     }
     td { padding: 11px 14px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; color: var(--ink-mid); }
     tr:last-child td { border-bottom: none; }
-    tbody tr:hover td { background: #fbf7f0; }
+    tbody tr:hover td { background: #f8f3eb; }
 
     /* ── Badges ── */
     .badge { display: inline-flex; align-items: center; gap: 4px; border-radius: 20px; padding: 3px 9px; font-size: 11px; font-weight: 700; white-space: nowrap; }
@@ -954,8 +955,8 @@ def styles() -> str:
       white-space: nowrap;
     }
     .btn:hover { border-color: var(--ink-mid); color: var(--ink); text-decoration: none; }
-    .btn-primary { background: linear-gradient(135deg, var(--brand), var(--brand-dark)); color: #fff; border-color: var(--brand-dark); box-shadow: 0 8px 16px rgba(92,16,39,.16); }
-    .btn-primary:hover { background: linear-gradient(135deg, #9d1b44, var(--brand-dark)); border-color: var(--brand-dark); color: #fff; }
+    .btn-primary { background: linear-gradient(135deg, #161616, #050505); color: #fff; border-color: #050505; box-shadow: 0 10px 22px rgba(0,0,0,.18); }
+    .btn-primary:hover { background: linear-gradient(135deg, #262626, #050505); border-color: #000; color: #fff; }
     .btn-primary:disabled { opacity: .6; cursor: wait; }
     .btn-ghost { border-color: transparent; background: transparent; }
     .btn-ghost:hover { background: var(--line-light); border-color: var(--line); }
@@ -976,7 +977,7 @@ def styles() -> str:
       outline: none;
       transition: border-color .12s;
     }
-    .filters input:focus, .filters select:focus { border-color: var(--brand); box-shadow: 0 0 0 3px rgba(138,21,56,.11); }
+    .filters input:focus, .filters select:focus { border-color: var(--brand); box-shadow: 0 0 0 3px rgba(8,8,8,.11); }
 
     /* ── Tools panel ── */
     .tool-grid { display: grid; grid-template-columns: 360px 1fr; gap: 18px; align-items: start; }
@@ -993,7 +994,7 @@ def styles() -> str:
       width: 100%;
       transition: border-color .12s;
     }
-    .field input:focus, .field select:focus { border-color: var(--brand); box-shadow: 0 0 0 3px rgba(138,21,56,.11); }
+    .field input:focus, .field select:focus { border-color: var(--brand); box-shadow: 0 0 0 3px rgba(8,8,8,.11); }
     .checks { display: grid; gap: 10px; margin: 14px 0; }
     .checks label { display: flex; gap: 9px; align-items: center; font-size: 13px; color: var(--ink-mid); cursor: pointer; }
     .checks input[type=checkbox] { width: 15px; height: 15px; accent-color: var(--brand); cursor: pointer; }
@@ -1054,7 +1055,7 @@ def styles() -> str:
       padding-bottom: 36px;
       border-radius: var(--radius-sm);
     }
-    .lane-cards.drag-over { background: rgba(159, 29, 44, .04); }
+    .lane-cards.drag-over { background: rgba(8, 8, 8, .04); }
     .task-card {
       background: var(--panel);
       border: 1px solid var(--line);
@@ -5992,6 +5993,31 @@ _AUDIT_SCOPE_OPTIONS = OrderedDict([
     }),
 ])
 
+_DEEP_AUDIT_SCOPE_OPTIONS = OrderedDict([
+    ("10000", {
+        "label": "10.000 paginas do site",
+        "limit": 10000,
+        "duration": "8 a 12 horas",
+    }),
+    ("20000", {
+        "label": "20.000 paginas do site",
+        "limit": 20000,
+        "duration": "17 a 24 horas",
+    }),
+    ("50000", {
+        "label": "50.000 paginas do site",
+        "limit": 50000,
+        "duration": "2 a 3 dias",
+    }),
+    ("100000", {
+        "label": "100.000 paginas do site",
+        "limit": 100000,
+        "duration": "4 a 5 dias",
+    }),
+])
+_DEEP_AUDIT_BATCH_SIZE = 100
+_DEEP_AUDIT_SAMPLE_LIMIT = 800
+
 
 def _audit_scope_config(scope_key: str | None) -> tuple[str, dict]:
     key = str(scope_key or "priority")
@@ -6008,6 +6034,19 @@ def _full_audit_gsc_limit(scope_key: str | None) -> int:
     except Exception:
         requested = 100
     return max(100, min(2000, requested))
+
+
+def _deep_audit_scope_config(scope_key: str | None) -> tuple[str, dict]:
+    key = str(scope_key or "10000")
+    if key not in _DEEP_AUDIT_SCOPE_OPTIONS:
+        key = "10000"
+    return key, dict(_DEEP_AUDIT_SCOPE_OPTIONS[key])
+
+
+def _deep_audit_max_sitemaps(limit: int) -> int:
+    # Large stores usually expose many child sitemaps. Keep this bounded so a
+    # broken sitemap index cannot trap the process forever.
+    return max(20, min(500, (int(limit or 0) // 450) + 30))
 
 
 def _select_full_audit_pages(scope_key: str) -> tuple[list[str], dict]:
@@ -6086,6 +6125,62 @@ def _select_full_audit_pages(scope_key: str) -> tuple[list[str], dict]:
     }
 
 
+def _select_deep_audit_pages(scope_key: str) -> tuple[list[str], dict]:
+    from config import get_brand_clusters, get_priority_pages
+    from modules.crawler import normalize_url
+    from modules.sitemap_robots import fetch_sitemap_urls
+
+    site_url = get_site_url()
+    if not site_url:
+        raise RuntimeError("Configure a URL do site em Configuracoes antes de rodar o crawler profundo.")
+
+    key, option = _deep_audit_scope_config(scope_key)
+    limit = int(option["limit"])
+    selected = []
+    seen = set()
+    priority_pages = []
+
+    def add_page(page: str, priority: bool = False) -> None:
+        normalized = normalize_url(page, site_url)
+        if normalized not in seen:
+            seen.add(normalized)
+            selected.append(normalized)
+            if priority:
+                priority_pages.append(normalized)
+
+    for page in get_priority_pages():
+        add_page(page, priority=True)
+
+    for cluster in get_brand_clusters().values():
+        for page in [cluster.get("pillar"), *cluster.get("pages", []), *cluster.get("blog", [])]:
+            if page:
+                add_page(page)
+
+    configured_count = len(selected)
+    sitemap = fetch_sitemap_urls(max_sitemaps=_deep_audit_max_sitemaps(limit))
+    sitemap_pages = sitemap.get("urls", [])
+    for page in sitemap_pages:
+        add_page(page)
+        if len(selected) >= limit:
+            break
+
+    cluster_count = max(0, configured_count - len(priority_pages))
+    return selected[:limit], {
+        "key": key,
+        "label": option["label"],
+        "requested_pages": limit,
+        "duration": option["duration"],
+        "source": "Paginas prioritarias + clusters + sitemap",
+        "sitemap_total": len(sitemap_pages),
+        "sitemap_errors": sitemap.get("errors", []),
+        "sitemaps_checked": sitemap.get("sitemaps_checked", []),
+        "priority_pages": len(priority_pages),
+        "cluster_pages": cluster_count,
+        "selected_urls_sample": selected[:50],
+        "selected_urls_count": len(selected[:limit]),
+    }
+
+
 def _scoreable_onpage_warnings(page: dict) -> list:
     """Warnings that remain relevant to the on-page SEO health score."""
     return [
@@ -6113,6 +6208,226 @@ def _health_score(results: dict) -> int:
         return max(0, min(100, 100 - len(issues) * 20 - len(warnings) * 5))
 
     return round(sum(page_score(page) for page in pages) / len(pages))
+
+
+def _deep_onpage_category(text: str) -> str:
+    value = str(text or "")
+    checks = [
+        (r"meta title .*ausente|meta title .*curto|meta title .*longo|meta title .*duplicad", "Meta title"),
+        (r"meta description .*ausente|meta description .*curt|meta description .*long|meta description .*duplicad", "Meta description"),
+        (r"h1 ausente", "H1 ausente"),
+        (r"multiplos h1|m.ltiplo[s]? h1", "Multiplos H1"),
+        (r"nenhum h2|h2 ausente", "H2 ausente"),
+        (r"imagem|imagens|sem alt", "Imagens sem alt text"),
+        (r"canonical", "Tag canonical"),
+        (r"schema|json-ld", "Schema markup"),
+        (r"conteudo escasso|conte.do escasso|palavras", "Conteudo escasso"),
+        (r"html muito grande", "HTML muito grande"),
+        (r"redirect 302", "Redirect 302 temporario"),
+        (r"conteudo misto|conte.do misto|http.*https", "Conteudo misto HTTP/HTTPS"),
+        (r"orf.|link.*interno.*recebido", "Pagina orfa"),
+        (r"inacess|connection|timeout|status 0", "Pagina inacessivel"),
+    ]
+    folded = value.casefold()
+    for pattern, label in checks:
+        if re.search(pattern, folded, re.I):
+            return label
+    clean = re.sub(r"^\d+\s+", "", value).strip()
+    clean = re.sub(r"https?://\S+", "", clean).strip()
+    return clean[:80] if clean else "Outros achados"
+
+
+def _deep_display_url(url: str) -> str:
+    raw = str(url or "")
+    site = str(get_site_url() or "").rstrip("/")
+    if site and raw.rstrip("/") == site:
+        return "/"
+    if site and raw.startswith(site):
+        return raw[len(site):] or "/"
+    return raw or "/"
+
+
+def _deep_audit_empty_summary(scope_info: dict | None = None) -> dict:
+    return {
+        "status": "running",
+        "audited_pages": 0,
+        "critical_pages": 0,
+        "issues": 0,
+        "warnings": 0,
+        "findings": 0,
+        "score_sum": 0,
+        "health": 0,
+        "categories": {},
+        "sample_findings": [],
+        "_audit_scope": scope_info or {},
+    }
+
+
+def _deep_audit_record_category(summary: dict, category: str, url: str, message: str,
+                                severity: str, page_seen: set) -> None:
+    categories = summary.setdefault("categories", {})
+    row = categories.setdefault(category, {
+        "category": category,
+        "severity": severity,
+        "pages": 0,
+        "occurrences": 0,
+        "sample_pages": [],
+    })
+    if severity == "issue":
+        row["severity"] = "issue"
+    row["occurrences"] += 1
+    if category not in page_seen:
+        row["pages"] += 1
+        page_seen.add(category)
+        if len(row["sample_pages"]) < 8:
+            row["sample_pages"].append({
+                "url": _deep_display_url(url),
+                "reason": str(message or "")[:220],
+            })
+    sample = summary.setdefault("sample_findings", [])
+    if len(sample) < _DEEP_AUDIT_SAMPLE_LIMIT:
+        sample.append({
+            "url": _deep_display_url(url),
+            "category": category,
+            "severity": severity,
+            "message": str(message or "")[:260],
+        })
+
+
+def _deep_audit_update_summary(summary: dict, pages: list[dict]) -> dict:
+    for page in pages or []:
+        if not isinstance(page, dict):
+            continue
+        summary["audited_pages"] = int(summary.get("audited_pages", 0)) + 1
+        summary["score_sum"] = int(summary.get("score_sum", 0)) + int(page.get("score", 0) or 0)
+        if page.get("grade", "A") in ("D", "F"):
+            summary["critical_pages"] = int(summary.get("critical_pages", 0)) + 1
+
+        url = page.get("url") or page.get("final_url") or ""
+        seen_categories = set()
+        for issue in page.get("issues", []):
+            summary["issues"] = int(summary.get("issues", 0)) + 1
+            summary["findings"] = int(summary.get("findings", 0)) + 1
+            _deep_audit_record_category(
+                summary, _deep_onpage_category(str(issue)), url, str(issue), "issue", seen_categories
+            )
+        for warning in _scoreable_onpage_warnings(page):
+            summary["warnings"] = int(summary.get("warnings", 0)) + 1
+            summary["findings"] = int(summary.get("findings", 0)) + 1
+            _deep_audit_record_category(
+                summary, _deep_onpage_category(str(warning)), url, str(warning), "warning", seen_categories
+            )
+    audited = int(summary.get("audited_pages", 0))
+    summary["health"] = round(int(summary.get("score_sum", 0)) / audited) if audited else 0
+    return summary
+
+
+def _deep_audit_cancelled(job_id: str) -> bool:
+    with _AUDIT_LOCK:
+        return bool((_AUDIT_JOBS.get(job_id) or {}).get("cancel_requested"))
+
+
+def _run_deep_audit(job_id: str, q: _queue_mod.Queue, scope_key: str = "10000",
+                    site_config: dict | None = None,
+                    audit_context_key: str | None = None) -> None:
+    if site_config is not None:
+        set_runtime_site_config(site_config)
+
+    def emit(step, label, status, summary="", data=None):
+        q.put({"step": step, "label": label, "status": status,
+               "summary": summary, "data": data or {}})
+
+    started_at = datetime.now(timezone.utc)
+    result = _deep_audit_empty_summary()
+    try:
+        key, option = _deep_audit_scope_config(scope_key)
+        emit("prepare", "Preparacao", "running", f"Carregando sitemap para {option['label']}...")
+        pages, scope_info = _select_deep_audit_pages(key)
+        total = len(pages)
+        if not pages:
+            raise RuntimeError("Nenhuma URL encontrada para o crawler profundo.")
+
+        scope_info["audited_pages"] = 0
+        result = _deep_audit_empty_summary(scope_info)
+        result["started_at"] = started_at.isoformat()
+        emit("prepare", "Preparacao", "ok",
+             f"{total:,} URLs selecionadas de {scope_info.get('sitemap_total', 0):,} encontradas no sitemap".replace(",", "."),
+             {"percent": 3, "total": total})
+
+        from modules import onpage as _onpage
+
+        batch_size = _DEEP_AUDIT_BATCH_SIZE
+        for start in range(0, total, batch_size):
+            if _deep_audit_cancelled(job_id):
+                result["status"] = "cancelled"
+                emit("crawl", "Crawler On-Page", "warn",
+                     f"Cancelado apos {result.get('audited_pages', 0):,}/{total:,} URLs".replace(",", "."),
+                     {"percent": max(3, round((result.get("audited_pages", 0) / total) * 100))})
+                break
+
+            batch = pages[start:start + batch_size]
+            batch_no = (start // batch_size) + 1
+            total_batches = ((total - 1) // batch_size) + 1
+            progress_step = max(1, min(25, len(batch) // 4 or 1))
+
+            def report_progress(done, batch_total, _url):
+                absolute_done = min(total, start + done)
+                if done == 1 or done == batch_total or done % progress_step == 0:
+                    percent = max(3, min(99, round((absolute_done / total) * 100)))
+                    emit(
+                        "crawl",
+                        "Crawler On-Page",
+                        "running",
+                        f"Lote {batch_no}/{total_batches} - {absolute_done:,}/{total:,} URLs analisadas".replace(",", "."),
+                        {"percent": percent, "done": absolute_done, "total": total},
+                    )
+
+            batch_results = _onpage.audit_pages(batch, verbose=False, progress_callback=report_progress)
+            _deep_audit_update_summary(result, batch_results)
+            result["processed_batches"] = batch_no
+            result["updated_at"] = datetime.now(timezone.utc).isoformat()
+            with _AUDIT_LOCK:
+                if job_id in _AUDIT_JOBS:
+                    _AUDIT_JOBS[job_id]["partial_result"] = result
+
+        if result.get("status") != "cancelled":
+            result["status"] = "done"
+            emit("crawl", "Crawler On-Page", "ok",
+                 f"{result.get('audited_pages', 0):,} URLs analisadas - {result.get('findings', 0):,} achados".replace(",", "."),
+                 {"percent": 100})
+
+        elapsed = datetime.now(timezone.utc) - started_at
+        result["completed_at"] = datetime.now().strftime("%d/%m/%Y %H:%M")
+        result["elapsed_seconds"] = int(elapsed.total_seconds())
+        result["categories"] = dict(sorted(
+            result.get("categories", {}).items(),
+            key=lambda item: (0 if item[1].get("severity") == "issue" else 1, -int(item[1].get("pages", 0)), item[0]),
+        ))
+        with _AUDIT_LOCK:
+            if job_id in _AUDIT_JOBS:
+                _AUDIT_JOBS[job_id].update({
+                    "status": result["status"],
+                    "result": result,
+                    "kind": "deep-audit",
+                })
+        q.put({
+            "done": True,
+            "status": result["status"],
+            "health": result.get("health", 0),
+            "report_url": f"/deep-audit/report/{job_id}",
+        })
+    except Exception as exc:
+        result["status"] = "error"
+        result["error"] = str(exc)
+        with _AUDIT_LOCK:
+            if job_id in _AUDIT_JOBS:
+                _AUDIT_JOBS[job_id].update({
+                    "status": "error",
+                    "result": result,
+                    "kind": "deep-audit",
+                })
+        emit("crawl", "Crawler On-Page", "error", str(exc)[:160], {"percent": 100})
+        q.put({"done": True, "status": "error", "report_url": f"/deep-audit/report/{job_id}"})
 
 
 def _run_full_audit(job_id: str, q: _queue_mod.Queue, scope_key: str = "priority",
@@ -6305,6 +6620,14 @@ def full_audit():
         {key: option["duration"] for key, option in _AUDIT_SCOPE_OPTIONS.items()},
         ensure_ascii=False,
     )
+    deep_options_html = "".join(
+        f'<option value="{key}">{esc(option["label"])} ({esc(option["duration"])})</option>'
+        for key, option in _DEEP_AUDIT_SCOPE_OPTIONS.items()
+    )
+    deep_durations_json = _json_mod.dumps(
+        {key: option["duration"] for key, option in _DEEP_AUDIT_SCOPE_OPTIONS.items()},
+        ensure_ascii=False,
+    )
     body = """
 <div class="section-head">
   <h1>Auditoria Completa</h1>
@@ -6324,6 +6647,45 @@ def full_audit():
   <p class="muted" style="font-size:12px;margin:12px 0 0">
     Os modos amplos usam o sitemap e incluem primeiro as páginas prioritárias. O tempo real varia com a resposta do site e das APIs; mantenha o sistema em execução durante a análise.
   </p>
+</div>
+
+<div class="panel" id="deep-audit-settings" style="max-width:920px;margin-bottom:24px;padding:20px">
+  <div class="panel-head" style="margin-bottom:12px">
+    <div>
+      <h2 class="panel-title">Crawler Profundo</h2>
+      <p class="muted" style="font-size:12px;margin:4px 0 0">
+        Varredura tecnica on-page em grande escala. Nao gera IA nem Kanban automaticamente; entrega um relatorio agregado dos achados.
+      </p>
+    </div>
+  </div>
+  <label for="deep-page-scope" style="display:block;font-size:13px;font-weight:700;margin-bottom:8px">
+    Limite de paginas do crawler profundo
+  </label>
+  <select id="deep-page-scope" onchange="updateDeepAuditEstimate()"
+          style="width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:7px;background:var(--panel);font-size:14px;color:var(--ink)">
+    __DEEP_AUDIT_OPTIONS__
+  </select>
+  <div id="deep-time-note" style="margin-top:14px;padding:12px 14px;border-radius:7px;background:var(--warn-bg);color:var(--ink);font-size:13px"></div>
+  <p class="muted" style="font-size:12px;margin:12px 0 16px">
+    Importante: 50k/100k e um trabalho de crawler, nao uma auditoria interativa comum. Em servidor serverless, a execucao pode ser encerrada pela plataforma; para producao pesada, use worker dedicado.
+  </p>
+  <div style="display:flex;gap:10px;flex-wrap:wrap">
+    <button class="btn btn-primary" id="deep-start-btn" onclick="startDeepAudit()">Iniciar Crawler Profundo</button>
+    <button class="btn btn-secondary" id="deep-cancel-btn" onclick="cancelDeepAudit()" style="display:none">Cancelar crawler</button>
+  </div>
+</div>
+
+<div id="deep-progress-panel" style="display:none">
+  <div class="panel" style="margin-bottom:20px">
+    <div class="panel-head">
+      <h2 class="panel-title">Progresso do Crawler Profundo</h2>
+      <span id="deep-prog-pct" style="font-size:13px;color:var(--muted)">0%</span>
+    </div>
+    <div style="background:var(--line);border-radius:99px;height:6px;margin:0 20px 20px">
+      <div id="deep-prog-bar" style="background:var(--brand);height:6px;border-radius:99px;width:0%;transition:width .4s"></div>
+    </div>
+    <div id="deep-steps-list" style="padding:0 20px 20px;display:flex;flex-direction:column;gap:8px"></div>
+  </div>
 </div>
 
 <!-- Progress panel -->
@@ -6351,6 +6713,8 @@ var _stepData  = {};
 var _auditCompleted = false;
 var _persistFallbackTimer = null;
 var _auditDurations = __AUDIT_DURATIONS__;
+var _deepAuditDurations = __DEEP_AUDIT_DURATIONS__;
+var _deepJobId = null;
 
 function updateAuditEstimate() {
   var scope = document.getElementById('audit-page-scope').value;
@@ -6358,6 +6722,13 @@ function updateAuditEstimate() {
   note.textContent = 'Tempo estimado: ' + _auditDurations[scope] + '. Auditorias maiores podem continuar rodando mesmo com esta página aberta.';
 }
 updateAuditEstimate();
+
+function updateDeepAuditEstimate() {
+  var scope = document.getElementById('deep-page-scope').value;
+  var note = document.getElementById('deep-time-note');
+  note.textContent = 'Tempo estimado: ' + _deepAuditDurations[scope] + '. Este modo processa em lotes de 100 URLs e mostra progresso em tempo real.';
+}
+updateDeepAuditEstimate();
 
 function finishAuditRedirect() {
   if (_auditCompleted) return;
@@ -6444,9 +6815,94 @@ function handleStep(ev) {
   if (ev.step === 'persist' && ev.status === 'running') scheduleReportFallback(10000);
   if (ev.step === 'persist' && isTerminal) scheduleReportFallback(800);
 }
+
+function startDeepAudit() {
+  var scope = document.getElementById('deep-page-scope').value;
+  document.getElementById('deep-start-btn').disabled = true;
+  document.getElementById('deep-start-btn').textContent = 'Rodando...';
+  document.getElementById('deep-cancel-btn').style.display = 'inline-flex';
+  document.getElementById('deep-cancel-btn').disabled = false;
+  document.getElementById('deep-cancel-btn').textContent = 'Cancelar crawler';
+  document.getElementById('deep-progress-panel').style.display = 'block';
+  document.getElementById('deep-steps-list').innerHTML = '';
+  document.getElementById('deep-prog-bar').style.width = '0%';
+  document.getElementById('deep-prog-pct').textContent = '0%';
+
+  fetch('/deep-audit/start', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({page_scope:scope})
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) throw new Error(d.error);
+      _deepJobId = d.job_id;
+      var es = new EventSource('/deep-audit/stream/' + _deepJobId);
+      es.onmessage = function(e) {
+        var ev = JSON.parse(e.data);
+        if (ev.keepalive) return;
+        if (ev.done) {
+          es.close();
+          document.getElementById('deep-start-btn').disabled = false;
+          document.getElementById('deep-start-btn').textContent = 'Novo Crawler Profundo';
+          document.getElementById('deep-cancel-btn').style.display = 'none';
+          window.location.href = ev.report_url || ('/deep-audit/report/' + _deepJobId);
+          return;
+        }
+        handleDeepStep(ev);
+      };
+      es.onerror = function() {
+        es.close();
+        document.getElementById('deep-start-btn').disabled = false;
+        document.getElementById('deep-start-btn').textContent = 'Retomar / tentar novamente';
+      };
+    })
+    .catch(err => {
+      document.getElementById('deep-start-btn').disabled = false;
+      document.getElementById('deep-start-btn').textContent = 'Iniciar Crawler Profundo';
+      alert(err.message || 'Falha ao iniciar crawler profundo');
+    });
+}
+
+function cancelDeepAudit() {
+  if (!_deepJobId) return;
+  fetch('/deep-audit/cancel/' + _deepJobId, {method:'POST'})
+    .then(() => {
+      document.getElementById('deep-cancel-btn').disabled = true;
+      document.getElementById('deep-cancel-btn').textContent = 'Cancelando...';
+    });
+}
+
+function handleDeepStep(ev) {
+  var id = 'deep-step-' + ev.step;
+  var el = document.getElementById(id);
+  if (!el) {
+    el = document.createElement('div');
+    el.id = id;
+    el.className = 'step-row';
+    document.getElementById('deep-steps-list').appendChild(el);
+  }
+  var iconHtml = {
+    running: '<svg class="step-icon running" viewBox="0 0 16 16" fill="none" stroke="#2563eb" stroke-width="2"><path d="M8 2a6 6 0 1 1-4.24 1.76"/></svg>',
+    ok:      '<svg class="step-icon" viewBox="0 0 16 16" fill="none" stroke="#16a34a" stroke-width="2"><circle cx="8" cy="8" r="6"/><polyline points="5 8 7 10.5 11 6"/></svg>',
+    error:   '<svg class="step-icon" viewBox="0 0 16 16" fill="none" stroke="#dc2626" stroke-width="2"><circle cx="8" cy="8" r="6"/><line x1="6" y1="6" x2="10" y2="10"/><line x1="10" y1="6" x2="6" y2="10"/></svg>',
+    warn:    '<svg class="step-icon" viewBox="0 0 16 16" fill="none" stroke="#d97706" stroke-width="2"><path d="M8 2l6 12H2z"/><line x1="8" y1="7" x2="8" y2="10"/><circle cx="8" cy="12" r=".5" fill="#d97706"/></svg>',
+  }[ev.status] || '';
+  el.innerHTML = iconHtml +
+    '<span class="step-label">' + ev.label + '</span>' +
+    '<span class="step-summary">' + (ev.summary || '') + '</span>' +
+    '<span class="step-badge ' + ev.status + '">' + ev.status + '</span>';
+  var pct = ev.data && ev.data.percent ? ev.data.percent : 0;
+  if (pct) {
+    document.getElementById('deep-prog-bar').style.width = pct + '%';
+    document.getElementById('deep-prog-pct').textContent = pct + '%';
+  }
+}
 </script>"""
     body = body.replace("__AUDIT_OPTIONS__", options_html)
     body = body.replace("__AUDIT_DURATIONS__", durations_json)
+    body = body.replace("__DEEP_AUDIT_OPTIONS__", deep_options_html)
+    body = body.replace("__DEEP_AUDIT_DURATIONS__", deep_durations_json)
     return page_shell("Auditoria Completa", _AUDIT_CSS + body)
 
 
@@ -6493,6 +6949,193 @@ def full_audit_stream(job_id):
         mimetype="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.route("/deep-audit/start", methods=["POST"])
+def deep_audit_start():
+    site_config = _load_active_site_config() if _is_authenticated() else None
+    if _is_authenticated():
+        if not (site_config or {}).get("site_url"):
+            return jsonify({"error": "Cadastre um site antes de iniciar o crawler profundo."}), 400
+    elif not get_site_url():
+        return jsonify({"error": "Configure a URL do site antes de iniciar o crawler profundo."}), 400
+
+    payload = request.get_json(silent=True) or {}
+    scope_key, _scope_info = _deep_audit_scope_config(payload.get("page_scope"))
+    job_id = uuid.uuid4().hex
+    context_key = _audit_context_key(site_config=site_config, user_id=_current_user_id())
+    q = _audit_register(job_id, _current_user_id(), _current_site_id(), context_key)
+    with _AUDIT_LOCK:
+        if job_id in _AUDIT_JOBS:
+            _AUDIT_JOBS[job_id].update({
+                "kind": "deep-audit",
+                "scope_key": scope_key,
+                "cancel_requested": False,
+            })
+    threading.Thread(
+        target=_run_deep_audit,
+        args=(job_id, q, scope_key, site_config, context_key),
+        daemon=True,
+    ).start()
+    return jsonify({"job_id": job_id, "page_scope": scope_key})
+
+
+@app.route("/deep-audit/stream/<job_id>")
+def deep_audit_stream(job_id):
+    job = _audit_get(job_id)
+    if not job or job.get("kind") != "deep-audit":
+        return jsonify({"error": "job not found"}), 404
+    q = job["q"]
+
+    def generate():
+        while True:
+            try:
+                event = q.get(timeout=55)
+                yield f"data: {_json_mod.dumps(event, ensure_ascii=False)}\n\n"
+                if event.get("done"):
+                    break
+            except _queue_mod.Empty:
+                yield 'data: {"keepalive":true}\n\n'
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.route("/deep-audit/cancel/<job_id>", methods=["POST"])
+def deep_audit_cancel(job_id):
+    job = _audit_get(job_id)
+    if not job or job.get("kind") != "deep-audit":
+        return jsonify({"error": "job not found"}), 404
+    with _AUDIT_LOCK:
+        if job_id in _AUDIT_JOBS:
+            _AUDIT_JOBS[job_id]["cancel_requested"] = True
+    return jsonify({"ok": True})
+
+
+@app.route("/deep-audit/report/<job_id>")
+def deep_audit_report(job_id):
+    job = _audit_get(job_id)
+    if not job or job.get("kind") != "deep-audit":
+        return redirect("/full-audit?new=1")
+    R = job.get("result") or job.get("partial_result") or {}
+    if not R:
+        return redirect("/full-audit?new=1")
+
+    scope = R.get("_audit_scope") or {}
+    categories = list((R.get("categories") or {}).values())
+    sample_findings = R.get("sample_findings") or []
+    status = R.get("status", "running")
+    status_label = {
+        "done": "Concluido",
+        "cancelled": "Cancelado",
+        "error": "Erro",
+        "running": "Rodando",
+    }.get(status, status)
+    elapsed_seconds = int(R.get("elapsed_seconds", 0) or 0)
+    elapsed = f"{elapsed_seconds // 3600}h {(elapsed_seconds % 3600) // 60}min" if elapsed_seconds else "-"
+
+    def mcard(val, lbl, cls=""):
+        return (f'<div class="metric-card {cls}">'
+                f'<div class="val">{val}</div>'
+                f'<div class="lbl">{lbl}</div>'
+                f'</div>')
+
+    category_rows = ""
+    for row in categories:
+        sev = row.get("severity", "warning")
+        badge_cls = "error" if sev == "issue" else "warn"
+        badge_label = "Erro" if sev == "issue" else "Aviso"
+        samples = row.get("sample_pages") or []
+        sample_html = "".join(
+            f'<div style="font-size:12px;color:var(--muted);margin-top:4px">'
+            f'<strong>{esc(item.get("url", ""))}</strong> - {esc(item.get("reason", ""))}</div>'
+            for item in samples[:4]
+        )
+        pages_count = f"{int(row.get('pages', 0) or 0):,}".replace(",", ".")
+        occurrences_count = f"{int(row.get('occurrences', 0) or 0):,}".replace(",", ".")
+        category_rows += f"""
+<tr>
+  <td>
+    <div style="font-weight:700">{esc(row.get("category", ""))}</div>
+    {sample_html}
+  </td>
+  <td><span class="step-badge {badge_cls}">{badge_label}</span></td>
+  <td style="text-align:right;font-weight:700">{pages_count}</td>
+  <td style="text-align:right">{occurrences_count}</td>
+</tr>"""
+
+    sample_rows = ""
+    for item in sample_findings[:200]:
+        sev = item.get("severity", "warning")
+        badge_cls = "error" if sev == "issue" else "warn"
+        sample_rows += f"""
+<tr>
+  <td style="font-weight:700;overflow-wrap:anywhere">{esc(item.get("url", ""))}</td>
+  <td>{esc(item.get("category", ""))}</td>
+  <td><span class="step-badge {badge_cls}">{esc(sev)}</span></td>
+  <td style="color:var(--muted);font-size:12px">{esc(item.get("message", ""))}</td>
+</tr>"""
+
+    note = ""
+    if status == "error":
+        note = f'<div class="alert alert-danger" style="margin-bottom:18px">Erro: {esc(R.get("error", ""))}</div>'
+    elif status == "cancelled":
+        note = '<div class="alert alert-warning" style="margin-bottom:18px">Crawler cancelado. O relatorio abaixo mostra o que ja foi processado.</div>'
+
+    body = f"""
+<div class="section-head">
+  <div>
+    <h1>Crawler Profundo</h1>
+    <p class="muted" style="margin-top:4px">Status: {esc(status_label)} &middot; {esc(R.get("completed_at", ""))}</p>
+  </div>
+  <a href="/full-audit?new=1" class="btn btn-primary">Nova varredura</a>
+</div>
+{note}
+<div class="panel" style="padding:22px;margin-bottom:22px">
+  <div class="panel-head">
+    <div>
+      <h2 class="panel-title">Resumo tecnico</h2>
+      <p class="muted" style="font-size:12px;margin:4px 0 0">
+        Escopo: {esc(scope.get("label", ""))} &middot; Origem: {esc(scope.get("source", ""))} &middot; Tempo estimado: {esc(scope.get("duration", ""))}
+      </p>
+    </div>
+  </div>
+  <div class="metric-grid">
+    {mcard(f"{int(R.get('audited_pages', 0) or 0):,}".replace(",", "."), "URLs auditadas", "info")}
+    {mcard(f"{int(scope.get('sitemap_total', 0) or 0):,}".replace(",", "."), "URLs no sitemap")}
+    {mcard(f"{int(R.get('health', 0) or 0)}", "Score on-page medio", "ok" if int(R.get("health", 0) or 0) >= 75 else "warn")}
+    {mcard(f"{int(R.get('critical_pages', 0) or 0):,}".replace(",", "."), "Paginas criticas D/F", "bad" if int(R.get("critical_pages", 0) or 0) else "ok")}
+    {mcard(f"{int(R.get('issues', 0) or 0):,}".replace(",", "."), "Erros", "bad" if int(R.get("issues", 0) or 0) else "ok")}
+    {mcard(f"{int(R.get('warnings', 0) or 0):,}".replace(",", "."), "Avisos", "warn" if int(R.get("warnings", 0) or 0) else "ok")}
+    {mcard(esc(elapsed), "Tempo executado")}
+  </div>
+  <p class="muted" style="font-size:12px;margin:0">
+    Este modo resume achados em massa e mostra uma amostra dos problemas. Para 50k/100k em producao, o ideal e persistir os detalhes em banco/worker para exportacao completa.
+  </p>
+</div>
+
+<div class="panel" style="padding:22px;margin-bottom:22px">
+  <div class="panel-head"><h2 class="panel-title">Categorias de problemas</h2></div>
+  <table class="data-table">
+    <thead><tr><th>Categoria</th><th>Tipo</th><th style="text-align:right">Paginas</th><th style="text-align:right">Ocorrencias</th></tr></thead>
+    <tbody>{category_rows or '<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:18px">Nenhum problema encontrado.</td></tr>'}</tbody>
+  </table>
+</div>
+
+<div class="panel" style="padding:22px">
+  <div class="panel-head">
+    <h2 class="panel-title">Amostra de achados</h2>
+    <span class="muted" style="font-size:12px">Mostrando ate 200 de {len(sample_findings):,} armazenados</span>
+  </div>
+  <table class="data-table">
+    <thead><tr><th>URL</th><th>Categoria</th><th>Tipo</th><th>Detalhe</th></tr></thead>
+    <tbody>{sample_rows or '<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:18px">Sem amostra de achados.</td></tr>'}</tbody>
+  </table>
+</div>"""
+    return page_shell("Crawler Profundo", _AUDIT_CSS + body)
 
 
 @app.route("/full-audit/report/<job_id>")

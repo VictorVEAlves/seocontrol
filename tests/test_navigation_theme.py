@@ -18,9 +18,10 @@ def test_theme_uses_premium_palette():
     css = dashboard.styles()
 
     assert "--accent:" in css
-    assert "#c8a15a" in css
-    assert "--nav-bg:      #080d18" in css
-    assert "linear-gradient(135deg, var(--brand), var(--brand-dark))" in css
+    assert "#d6b25e" in css
+    assert "--brand:       #080808" in css
+    assert "--nav-bg:      #050505" in css
+    assert ".nav a.active { background: #e7e2d7; color: #080808" in css
 
 
 def test_dashboard_frontend_has_error_timeout_helpers(monkeypatch):
