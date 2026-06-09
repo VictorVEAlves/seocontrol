@@ -1072,6 +1072,203 @@ def get_dashboard_data(period_days: int = 28) -> dict:
     return out
 
 
+def get_pages_inventory(period_days: int = 28, limit: int = 2500) -> dict:
+    """Fetch page-level GSC performance for the Pages screen.
+
+    Metrics available for free come from Search Console. LLM prompts and
+    referring domains are intentionally returned as zero until dedicated
+    sources are connected.
+    """
+    import time as _time
+    import requests as _requests
+
+    period_days = max(7, min(90, int(period_days or 28)))
+    limit = max(100, min(25000, int(limit or 2500)))
+
+    cache_file = _dashboard_cache_file(f"pages_{limit}", period_days)
+    try:
+        if cache_file.exists():
+            cached = json.loads(cache_file.read_text(encoding="utf-8"))
+            if _time.time() - float(cached.get("_cached_at", 0)) < 3600:
+                return cached
+    except Exception:
+        pass
+
+    try:
+        bearer = _get_gsc_bearer(timeout=20)
+    except Exception as exc:
+        return {"error": str(exc), "rows": []}
+
+    today = date.today()
+    cur_end = today - timedelta(days=2)
+    cur_start = cur_end - timedelta(days=period_days - 1)
+    prev_end = cur_start - timedelta(days=1)
+    prev_start = prev_end - timedelta(days=period_days - 1)
+    query_url = _gsc_query_url()
+
+    def _fetch_all(start: date, end: date, dims: list[str], cap: int) -> list[dict]:
+        session = _requests.Session()
+        session.trust_env = False
+        rows: list[dict] = []
+        start_row = 0
+        while len(rows) < cap:
+            batch_limit = min(25000, cap - len(rows))
+            body = {
+                "startDate": str(start),
+                "endDate": str(end),
+                "dimensions": dims,
+                "rowLimit": batch_limit,
+                "startRow": start_row,
+            }
+            try:
+                resp = session.post(
+                    query_url,
+                    json=body,
+                    headers={"Authorization": f"Bearer {bearer}"},
+                    timeout=25,
+                )
+                resp.raise_for_status()
+                batch = resp.json().get("rows", []) or []
+            except Exception as exc:
+                print(f"    ! GSC pages fetch {dims} falhou: {exc}")
+                break
+            rows.extend(batch)
+            if len(batch) < batch_limit:
+                break
+            start_row += len(batch)
+        return rows
+
+    import concurrent.futures as _cf
+
+    query_cap = min(25000, max(5000, limit * 8))
+    executor = _cf.ThreadPoolExecutor(max_workers=3)
+    futures = {
+        executor.submit(_fetch_all, cur_start, cur_end, ["page"], limit): "current",
+        executor.submit(_fetch_all, prev_start, prev_end, ["page"], limit): "previous",
+        executor.submit(_fetch_all, cur_start, cur_end, ["page", "query"], query_cap): "queries",
+    }
+    done, pending = _cf.wait(futures, timeout=55)
+    executor.shutdown(wait=False)
+    results = {"current": [], "previous": [], "queries": []}
+    for fut in done:
+        try:
+            results[futures[fut]] = fut.result()
+        except Exception:
+            pass
+    for fut in pending:
+        fut.cancel()
+
+    def _metrics(row: dict) -> dict:
+        return {
+            "clicks": int(row.get("clicks", 0) or 0),
+            "impressions": int(row.get("impressions", 0) or 0),
+            "ctr": round(float(row.get("ctr", 0) or 0) * 100, 2),
+            "position": round(float(row.get("position", 0) or 0), 1),
+        }
+
+    cur_by_page: dict[str, dict] = {}
+    prev_by_page: dict[str, dict] = {}
+    for row in results["current"]:
+        keys = row.get("keys") or []
+        if keys:
+            cur_by_page[keys[0]] = _metrics(row)
+    for row in results["previous"]:
+        keys = row.get("keys") or []
+        if keys:
+            prev_by_page[keys[0]] = _metrics(row)
+
+    queries_by_page: dict[str, dict] = {}
+    for row in results["queries"]:
+        keys = row.get("keys") or []
+        if len(keys) < 2:
+            continue
+        page, query = keys[0], keys[1]
+        entry = queries_by_page.setdefault(page, {"queries": set(), "top": None})
+        entry["queries"].add(query)
+        candidate = {
+            "query": query,
+            "clicks": int(row.get("clicks", 0) or 0),
+            "impressions": int(row.get("impressions", 0) or 0),
+        }
+        top = entry.get("top")
+        if not top or (candidate["clicks"], candidate["impressions"]) > (top["clicks"], top["impressions"]):
+            entry["top"] = candidate
+
+    def _intent(query: str, url: str) -> tuple[str, str]:
+        text = f"{query} {url}".lower()
+        commercial = ("comprar", "preço", "preco", "desconto", "promoção", "promocao", "cupom", "oferta", "outlet")
+        informational = ("como", "qual", "quais", "guia", "melhor", "melhores", "dicas", "diferença", "diferenca", "o que")
+        transactional = ("camisa", "camiseta", "tenis", "tênis", "calça", "calca", "jaqueta", "moletom", "bone", "boné")
+        if any(term in text for term in commercial):
+            return "C", "Comercial"
+        if any(term in text for term in informational):
+            return "I", "Informacional"
+        if any(term in text for term in transactional):
+            return "T", "Transacional"
+        if query and query.replace(" ", "-") in url.lower():
+            return "N", "Navegacional"
+        return "I", "Informacional"
+
+    def _path(url: str) -> str:
+        base = get_site_url().rstrip("/")
+        alt = base.replace("://www.", "://")
+        path = url.replace(base, "").replace(alt, "")
+        return path or "/"
+
+    total_clicks = sum(v["clicks"] for v in cur_by_page.values())
+    all_pages = sorted(set(cur_by_page) | set(prev_by_page))
+    rows = []
+    for url in all_pages:
+        cur = cur_by_page.get(url, {"clicks": 0, "impressions": 0, "ctr": 0, "position": 0})
+        prev = prev_by_page.get(url, {"clicks": 0, "impressions": 0, "ctr": 0, "position": 0})
+        qinfo = queries_by_page.get(url, {})
+        top_query = (qinfo.get("top") or {}).get("query") or ""
+        intent_code, intent_label = _intent(top_query, url)
+        cur_total = cur["clicks"] + cur["impressions"]
+        prev_total = prev["clicks"] + prev["impressions"]
+        if cur_total and not prev_total:
+            status = "new"
+        elif prev_total and not cur_total:
+            status = "lost"
+        else:
+            status = "active"
+        rows.append({
+            "source": "GSC",
+            "url": url,
+            "path": _path(url),
+            "traffic": cur["clicks"],
+            "previous_traffic": prev["clicks"],
+            "traffic_delta": cur["clicks"] - prev["clicks"],
+            "traffic_share": round((cur["clicks"] / total_clicks * 100), 2) if total_clicks else 0,
+            "impressions": cur["impressions"],
+            "ctr": cur["ctr"],
+            "position": cur["position"],
+            "keywords": len(qinfo.get("queries") or []),
+            "llm_prompts": 0,
+            "ref_domains": 0,
+            "top_keyword": top_query,
+            "intent_code": intent_code,
+            "intent_label": intent_label,
+            "status": status,
+        })
+
+    rows.sort(key=lambda row: (row["traffic"], row["impressions"]), reverse=True)
+    out = {
+        "period_days": period_days,
+        "period": f"{cur_start} → {cur_end}",
+        "previous_period": f"{prev_start} → {prev_end}",
+        "total": len(rows),
+        "rows": rows,
+        "_cached_at": _time.time(),
+    }
+    try:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+    return out
+
+
 def get_dashboard_ai(period_days: int = 28) -> dict:
     """Generate Gemini analysis for the dashboard. Loads cached GSC data — runs independently."""
     import time as _time

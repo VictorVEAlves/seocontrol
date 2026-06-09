@@ -1270,6 +1270,7 @@ def styles() -> str:
 
 NAV_ICONS = {
     "dashboard": '<svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="6" height="6" rx="1.5"/><rect x="9" y="1" width="6" height="6" rx="1.5"/><rect x="1" y="9" width="6" height="6" rx="1.5"/><rect x="9" y="9" width="6" height="6" rx="1.5"/></svg>',
+    "pages":     '<svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="12" height="12" rx="1.5"/><line x1="5" y1="5" x2="11" y2="5"/><line x1="5" y1="8" x2="11" y2="8"/><line x1="5" y1="11" x2="9" y2="11"/></svg>',
     "issues":    '<svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6.5"/><line x1="8" y1="5" x2="8" y2="8.5"/><circle cx="8" cy="11" r=".6" fill="currentColor" stroke="none"/></svg>',
     "backlog":   '<svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><line x1="3" y1="4" x2="13" y2="4"/><line x1="3" y1="8" x2="13" y2="8"/><line x1="3" y1="12" x2="9" y2="12"/></svg>',
     "kanban":    '<svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="2" width="4" height="12" rx="1.5"/><rect x="6" y="2" width="4" height="8" rx="1.5"/><rect x="11" y="2" width="4" height="10" rx="1.5"/></svg>',
@@ -1326,6 +1327,7 @@ def page_shell(title: str, body: str, active: str = "") -> str:
       <div class="nav-label">Principal</div>
       <nav class="nav">
         {nav_link("/", "Dashboard", "dashboard")}
+        {nav_link("/pages", "Páginas", "pages")}
         {nav_link("/kanban", "Kanban", "kanban")}
       </nav>
     </nav>
@@ -2013,6 +2015,310 @@ def dashboard_ai():
         return jsonify(data)
     except Exception as exc:
         return jsonify({"ai_summary": "", "ai_error": str(exc)})
+
+
+def _pages_inventory_payload(period: int, limit: int, force: bool = False) -> dict:
+    ready, message, cfg = _dashboard_setup_status()
+    if not ready:
+        return {"error": message, "setup_required": True, "rows": []}
+    initial_token_json = str((cfg or {}).get("gsc_token_json") or "")
+    period = max(7, min(90, int(period or 28)))
+    limit = max(100, min(25000, int(limit or 2500)))
+    if force:
+        try:
+            from modules.gsc_api import _dashboard_cache_file
+            cache_file = _dashboard_cache_file(f"pages_{limit}", period)
+            if cache_file.exists():
+                cache_file.unlink()
+        except Exception:
+            pass
+    from modules.gsc_api import get_pages_inventory
+    data = get_pages_inventory(period_days=period, limit=limit)
+    _persist_dashboard_refreshed_gsc_token(initial_token_json)
+    return data
+
+
+@app.route("/pages/data")
+def pages_data():
+    from flask import jsonify
+    try:
+        period = max(7, min(90, int(request.args.get("period", 28))))
+    except (ValueError, TypeError):
+        period = 28
+    try:
+        limit = max(100, min(25000, int(request.args.get("limit", 2500))))
+    except (ValueError, TypeError):
+        limit = 2500
+    try:
+        data = _pages_inventory_payload(period, limit, force=request.args.get("force") == "1")
+        status = 503 if isinstance(data, dict) and data.get("error") else 200
+        return jsonify(data), status
+    except Exception as exc:
+        return jsonify({"error": str(exc), "rows": []}), 500
+
+
+@app.route("/pages/export.csv")
+def pages_export_csv():
+    import csv
+    import io
+
+    try:
+        period = max(7, min(90, int(request.args.get("period", 28))))
+    except (ValueError, TypeError):
+        period = 28
+    try:
+        limit = max(100, min(25000, int(request.args.get("limit", 2500))))
+    except (ValueError, TypeError):
+        limit = 2500
+    data = _pages_inventory_payload(period, limit, force=False)
+    rows = data.get("rows", []) if isinstance(data, dict) else []
+
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow([
+        "Fonte", "URL", "Trafego", "Alteracao no trafego", "Trafego %",
+        "Palavras-chave", "Prompts de LLM", "Dominios de ref.",
+        "Principal palavra-chave", "Intencao",
+    ])
+    for row in rows:
+        writer.writerow([
+            row.get("source", ""),
+            row.get("url", ""),
+            row.get("traffic", 0),
+            row.get("traffic_delta", 0),
+            row.get("traffic_share", 0),
+            row.get("keywords", 0),
+            row.get("llm_prompts", 0),
+            row.get("ref_domains", 0),
+            row.get("top_keyword", ""),
+            row.get("intent_label", ""),
+        ])
+    return Response(
+        out.getvalue(),
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=paginas-seo.csv"},
+    )
+
+
+@app.route("/pages")
+def pages_inventory():
+    ready, setup_message, setup_cfg = _dashboard_setup_status()
+    if not ready:
+        return _dashboard_onboarding(setup_message, setup_cfg)
+
+    body = """
+<style>
+  .pages-shell { display:flex; flex-direction:column; gap:12px; }
+  .pages-card { background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow-sm); overflow:hidden; }
+  .pages-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 18px; border-bottom:1px solid var(--line); }
+  .pages-title { display:flex; align-items:baseline; gap:8px; font-weight:800; color:var(--ink); }
+  .pages-title span { color:var(--muted); font-weight:500; }
+  .pages-toolbar { display:flex; align-items:center; gap:7px; flex-wrap:wrap; padding:12px 18px; border-bottom:1px solid var(--line-light); }
+  .pages-search { display:flex; align-items:center; min-width:220px; border:1px solid var(--line); border-radius:7px; overflow:hidden; background:var(--panel); }
+  .pages-search input { border:0; outline:0; padding:8px 10px; width:210px; background:transparent; color:var(--ink); font-size:13px; }
+  .pages-search button { border:0; border-left:1px solid var(--line); padding:8px 10px; background:var(--line-light); color:var(--muted); cursor:pointer; }
+  .pages-tab, .pages-select {
+    border:1px solid var(--line); background:var(--panel); color:var(--ink-mid);
+    border-radius:7px; padding:7px 11px; font-size:13px; font-weight:600; cursor:pointer;
+  }
+  .pages-tab.active { border-color:var(--brand); color:var(--brand); background:#fff; box-shadow:0 0 0 2px rgba(8,8,8,.05); }
+  .pages-select { cursor:default; }
+  .pages-note { font-size:11px; color:var(--muted); padding:0 18px 12px; }
+  .pages-table-wrap { overflow:auto; max-height:calc(100vh - 265px); }
+  .pages-table { width:100%; border-collapse:collapse; min-width:1180px; font-size:12px; }
+  .pages-table thead th {
+    position:sticky; top:0; z-index:2; background:#f2f0ec; color:#111827;
+    font-size:11px; font-weight:700; text-transform:none; letter-spacing:0;
+    padding:10px 12px; border-bottom:1px solid var(--line); white-space:nowrap; cursor:pointer;
+  }
+  .pages-table td { padding:10px 12px; border-bottom:1px solid var(--line-light); vertical-align:middle; }
+  .pages-table tbody tr:hover td { background:#f8f3eb; }
+  .url-cell { min-width:360px; max-width:500px; }
+  .url-link { color:#0068d7; font-weight:600; text-decoration:none; word-break:break-all; }
+  .url-link:hover { text-decoration:underline; }
+  .num { text-align:right; font-variant-numeric:tabular-nums; }
+  .delta-pos { color:#059669; font-weight:700; }
+  .delta-neg { color:#dc2626; font-weight:700; }
+  .delta-zero { color:var(--muted); font-weight:700; }
+  .source-pill { display:inline-flex; align-items:center; gap:4px; border:1px solid var(--line); background:#fff; border-radius:999px; padding:2px 8px; font-size:11px; font-weight:800; color:#4285f4; }
+  .intent-pill { display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border-radius:5px; font-size:11px; font-weight:800; }
+  .intent-C { background:#fde68a; color:#92400e; }
+  .intent-T { background:#bbf7d0; color:#166534; }
+  .intent-I { background:#bfdbfe; color:#1e40af; }
+  .intent-N { background:#e9d5ff; color:#6b21a8; }
+  .pages-empty { padding:38px; text-align:center; color:var(--muted); }
+  .pages-loading { padding:38px; text-align:center; color:var(--muted); }
+  .pages-error { margin:12px 18px; padding:12px 14px; border:1px solid var(--bad); background:var(--bad-bg); color:var(--bad); border-radius:8px; display:none; font-weight:700; font-size:13px; }
+  @media(max-width:780px){ .pages-head{align-items:flex-start;flex-direction:column}.pages-search{width:100%}.pages-search input{width:100%} }
+</style>
+
+<div class="pages-shell">
+  <div class="pages-card">
+    <div class="pages-head">
+      <div class="pages-title">Todas as páginas <span id="pages-count">carregando...</span></div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn btn-sm" id="pages-refresh" type="button">Atualizar</button>
+        <a class="btn btn-sm" id="pages-export" href="/pages/export.csv">Exportar</a>
+      </div>
+    </div>
+    <div class="pages-toolbar">
+      <div class="pages-search">
+        <input id="pages-filter" type="search" placeholder="Filtrar por URL ou keyword">
+        <button type="button" id="pages-filter-btn">⌕</button>
+      </div>
+      <button class="pages-tab active" data-status="all" type="button">Todas as URLs</button>
+      <button class="pages-tab" data-status="new" type="button">Novidades</button>
+      <button class="pages-tab" data-status="lost" type="button">Perdidas</button>
+      <select class="pages-select" id="pages-period">
+        <option value="7">7 dias</option>
+        <option value="28" selected>28 dias</option>
+        <option value="90">3 meses</option>
+      </select>
+      <select class="pages-select" id="pages-limit">
+        <option value="500">500 URLs</option>
+        <option value="2500" selected>2.500 URLs</option>
+        <option value="5000">5.000 URLs</option>
+        <option value="10000">10.000 URLs</option>
+      </select>
+    </div>
+    <div class="pages-note">
+      Fonte real: Google Search Console. Prompts de LLM e domínios de referência aparecem como 0 até conectarmos fontes próprias para esses dados.
+    </div>
+    <div class="pages-error" id="pages-error"></div>
+    <div class="pages-table-wrap">
+      <table class="pages-table">
+        <thead>
+          <tr>
+            <th data-field="source">Fonte</th>
+            <th data-field="url" style="text-align:left">URL</th>
+            <th data-field="traffic" class="num">Tráfego</th>
+            <th data-field="traffic_delta" class="num">Alteração no tráfego</th>
+            <th data-field="traffic_share" class="num">Tráfego, %</th>
+            <th data-field="keywords" class="num">Palavras-chave</th>
+            <th data-field="llm_prompts" class="num">Prompts de LLM</th>
+            <th data-field="ref_domains" class="num">Domínios de ref.</th>
+            <th data-field="top_keyword" style="text-align:left">Principal palavra-chave</th>
+            <th data-field="intent_code">Intenção</th>
+          </tr>
+        </thead>
+        <tbody id="pages-tbody">
+          <tr><td colspan="10" class="pages-loading">Carregando páginas...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  let rows = [];
+  let activeStatus = 'all';
+  let sort = { field: 'traffic', dir: -1 };
+
+  const $ = id => document.getElementById(id);
+  const fmt = n => Number(n || 0).toLocaleString('pt-BR');
+  const fmtCompact = n => {
+    n = Number(n || 0);
+    if (Math.abs(n) >= 1000000) return (n/1000000).toFixed(1).replace('.', ',') + ' M';
+    if (Math.abs(n) >= 1000) return (n/1000).toFixed(1).replace('.', ',') + 'K';
+    return fmt(n);
+  };
+  const esc = s => String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+  function exportHref() {
+    return '/pages/export.csv?period=' + $('pages-period').value + '&limit=' + $('pages-limit').value;
+  }
+
+  function filteredRows() {
+    const q = $('pages-filter').value.trim().toLowerCase();
+    return rows.filter(r => {
+      if (activeStatus !== 'all' && r.status !== activeStatus) return false;
+      if (!q) return true;
+      return String(r.url || '').toLowerCase().includes(q)
+          || String(r.top_keyword || '').toLowerCase().includes(q);
+    });
+  }
+
+  function render() {
+    const list = filteredRows();
+    list.sort((a, b) => {
+      const av = a[sort.field], bv = b[sort.field];
+      if (typeof av === 'string') return sort.dir * String(av || '').localeCompare(String(bv || ''), 'pt-BR');
+      return sort.dir * (Number(av || 0) - Number(bv || 0));
+    });
+    $('pages-count').textContent = fmt(list.length);
+    $('pages-export').href = exportHref();
+
+    if (!list.length) {
+      $('pages-tbody').innerHTML = '<tr><td colspan="10" class="pages-empty">Nenhuma página encontrada.</td></tr>';
+      return;
+    }
+    $('pages-tbody').innerHTML = list.map(r => {
+      const delta = Number(r.traffic_delta || 0);
+      const deltaCls = delta > 0 ? 'delta-pos' : delta < 0 ? 'delta-neg' : 'delta-zero';
+      const deltaTxt = (delta > 0 ? '+' : '') + fmtCompact(delta) + (delta > 0 ? ' ↑' : delta < 0 ? ' ↓' : '');
+      const intent = esc(r.intent_code || 'I');
+      return `<tr>
+        <td><span class="source-pill">${esc(r.source || 'GSC')}</span></td>
+        <td class="url-cell"><a class="url-link" href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.url)}</a></td>
+        <td class="num" style="color:#0068d7;font-weight:700">${fmtCompact(r.traffic)}</td>
+        <td class="num ${deltaCls}">${deltaTxt}</td>
+        <td class="num">${Number(r.traffic_share || 0).toFixed(2).replace('.', ',')}</td>
+        <td class="num" style="color:#0068d7">${fmt(r.keywords)}</td>
+        <td class="num" style="color:#0068d7">${fmt(r.llm_prompts)}</td>
+        <td class="num" style="color:#0068d7">${fmt(r.ref_domains)}</td>
+        <td style="color:#0068d7">${esc(r.top_keyword || '—')}</td>
+        <td><span class="intent-pill intent-${intent}" title="${esc(r.intent_label || '')}">${intent}</span></td>
+      </tr>`;
+    }).join('');
+  }
+
+  async function load(force) {
+    $('pages-error').style.display = 'none';
+    $('pages-tbody').innerHTML = '<tr><td colspan="10" class="pages-loading">Carregando páginas...</td></tr>';
+    $('pages-count').textContent = 'carregando...';
+    const period = $('pages-period').value;
+    const limit = $('pages-limit').value;
+    try {
+      const resp = await fetch('/pages/data?period=' + period + '&limit=' + limit + (force ? '&force=1' : ''));
+      const data = await resp.json();
+      if (!resp.ok || data.error) throw new Error(data.error || 'Falha ao carregar páginas.');
+      rows = data.rows || [];
+      render();
+    } catch (err) {
+      rows = [];
+      $('pages-count').textContent = '0';
+      $('pages-error').textContent = err.message || 'Falha ao carregar páginas.';
+      $('pages-error').style.display = 'block';
+      $('pages-tbody').innerHTML = '<tr><td colspan="10" class="pages-empty">Sem dados.</td></tr>';
+    }
+  }
+
+  document.querySelectorAll('.pages-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      activeStatus = btn.dataset.status;
+      document.querySelectorAll('.pages-tab').forEach(b => b.classList.toggle('active', b === btn));
+      render();
+    });
+  });
+  document.querySelectorAll('.pages-table th[data-field]').forEach(th => {
+    th.addEventListener('click', () => {
+      const field = th.dataset.field;
+      if (sort.field === field) sort.dir *= -1;
+      else sort = { field, dir: field === 'url' || field === 'top_keyword' || field === 'source' ? 1 : -1 };
+      render();
+    });
+  });
+  $('pages-filter').addEventListener('input', render);
+  $('pages-filter-btn').addEventListener('click', render);
+  $('pages-period').addEventListener('change', () => load(false));
+  $('pages-limit').addEventListener('change', () => load(false));
+  $('pages-refresh').addEventListener('click', () => load(true));
+  load(false);
+})();
+</script>
+"""
+    return page_shell("Páginas", body)
 
 
 def _dashboard_onboarding(message: str, cfg: dict | None = None):

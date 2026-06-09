@@ -11,6 +11,7 @@ def test_sidebar_prioritizes_dashboard(monkeypatch):
     assert '<div class="nav-label">Principal</div>' in html
     assert 'href="/full-audit?new=1"' in html
     assert html.index("Dashboard") < html.index("Nova Auditoria")
+    assert html.index("Páginas") < html.index("Nova Auditoria")
     assert html.index("Dashboard") < html.index("Auditoria Completa")
     assert "Local" not in html
     assert "SEO Control Center" not in html
