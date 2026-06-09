@@ -575,6 +575,16 @@ def save_report(all_results: dict, urls_label: str = "") -> str:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+AUDIT_MODULES = {"gsc", "gsc-api", "onpage", "duplicates", "broken-links", "clusters",
+                 "sitemap", "indexability", "snippets", "content-gap", "products",
+                 "link-suggestions", "regression", "monitor", "blog-ideas", "ai-analysis", "backlog",
+                 "change-memory", "ai-insights", "keyword-tracker", "schema-check", "cannibalization"}
+
+
+def should_save_report(args, run_all: bool, mod: str | None, results: dict) -> bool:
+    return bool(results) and not getattr(args, "no_report", False) and (run_all or mod in AUDIT_MODULES)
+
+
 def main():
     print_banner()
     args = parse_args()
@@ -1015,12 +1025,7 @@ def main():
             print(f"   x Falha ao exportar backlog: {e}\n")
 
     # Save JSON snapshot for dashboard /report view
-    AUDIT_MODULES = {"gsc", "gsc-api", "onpage", "duplicates", "broken-links", "clusters",
-                     "sitemap", "indexability", "snippets", "content-gap", "products",
-                     "link-suggestions", "regression", "monitor", "blog-ideas", "ai-analysis", "backlog",
-                     "change-memory", "ai-insights", "keyword-tracker", "schema-check", "cannibalization"}
-    should_report = run_all or mod in AUDIT_MODULES
-    if should_report and results:
+    if should_save_report(args, run_all, mod, results):
         out = save_report(results, urls_label=focused)
         if out:
             print(f"  ok snapshot salvo — veja em /report no dashboard")

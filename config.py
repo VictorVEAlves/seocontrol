@@ -499,8 +499,9 @@ PAGESPEED_API_KEY = os.environ.get("PAGESPEED_API_KEY", "")
 # Coloque os CSVs exportados do GSC diretamente aqui
 GSC_EXPORT_FOLDER = str(BASE_DIR / "gsc_exports")
 
-# Pasta de saída dos relatórios
-REPORTS_FOLDER = str(BASE_DIR / "reports")
+# Pasta de saída dos relatórios. Em produção serverless, o bundle (/var/task)
+# é somente leitura, então snapshots locais precisam ir para /tmp.
+REPORTS_FOLDER = str((get_runtime_dir() if is_serverless_runtime() else BASE_DIR) / "reports")
 
 # Rastreamento
 MAX_CRAWL_PAGES = 1000
