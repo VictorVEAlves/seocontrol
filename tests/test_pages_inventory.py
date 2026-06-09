@@ -15,11 +15,7 @@ def _fake_pages_payload(*_args, **_kwargs):
                 "traffic_delta": 4300,
                 "traffic_share": 5.63,
                 "keywords": 353,
-                "llm_prompts": 0,
-                "ref_domains": 0,
                 "top_keyword": "camiseta lacoste",
-                "intent_code": "T",
-                "intent_label": "Transacional",
                 "status": "active",
             },
             {
@@ -30,11 +26,7 @@ def _fake_pages_payload(*_args, **_kwargs):
                 "traffic_delta": 6200,
                 "traffic_share": 6.88,
                 "keywords": 162,
-                "llm_prompts": 0,
-                "ref_domains": 0,
                 "top_keyword": "reserva",
-                "intent_code": "C",
-                "intent_label": "Comercial",
                 "status": "new",
             },
         ],
@@ -51,8 +43,9 @@ def test_pages_screen_renders_inventory_shell(monkeypatch):
     assert "Todas as páginas" in html
     assert "Novidades" in html
     assert "Perdidas" in html
-    assert "Prompts de LLM" in html
-    assert "Domínios de ref." in html
+    assert "Prompts de LLM" not in html
+    assert "Domínios de ref." not in html
+    assert "Intenção" not in html
     assert "/pages/data" in html
     assert "/pages/export.csv" in html
 

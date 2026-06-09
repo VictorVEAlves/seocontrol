@@ -1438,14 +1438,82 @@ def build_tool_command(form) -> list[str]:
     return cmd
 
 
+_RUNTIME_TOOL_CONFIG_KEYS = {
+    "site_id",
+    "user_id",
+    "site_url",
+    "site_name",
+    "gsc_property",
+    "gsc_credentials_file",
+    "gsc_token_file",
+    "gsc_token_json",
+    "gsc_account_email",
+    "business_context",
+    "content_guidelines",
+    "priority_pages",
+    "brand_aliases",
+    "product_terms",
+    "commercial_terms",
+    "ai_api_keys",
+}
+
+
+def _compact_runtime_site_config(cfg: dict | None) -> dict:
+    """Keep only data needed by CLI tools.
+
+    Saved site settings can contain large report snapshots such as
+    last_full_audit. Passing those through SEO_RUNTIME_SITE_CONFIG makes
+    subprocess creation fail on Vercel with "Argument list too long".
+    """
+    if not isinstance(cfg, dict):
+        return {}
+    compact = {key: cfg.get(key) for key in _RUNTIME_TOOL_CONFIG_KEYS if cfg.get(key) is not None}
+    token_json = str(compact.get("gsc_token_json") or "")
+    if token_json:
+        compact["gsc_token_json"] = token_json
+    return compact
+
+
+def _tool_subprocess_env(runtime_cfg: str = "") -> dict:
+    keep_exact = {
+        "PATH", "PYTHONPATH", "PYTHONHOME",
+        "SYSTEMROOT", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT",
+        "HOME", "USERPROFILE", "TEMP", "TMP", "TMPDIR",
+        "LANG", "LC_ALL",
+        "VERCEL", "VERCEL_URL", "VERCEL_ENV", "VERCEL_GIT_COMMIT_SHA", "VERCEL_GIT_COMMIT_REF",
+        "AWS_LAMBDA_FUNCTION_NAME",
+        "AUTH_REQUIRED", "FLASK_SECRET_KEY", "APP_BASE_URL", "PUBLIC_APP_URL", "PUBLIC_BASE_URL",
+        "SUPABASE_URL", "SUPABASE_KEY", "SUPABASE_SERVICE_ROLE_KEY",
+        "GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_CLIENT_ID", "GSC_OAUTH_CLIENT_ID",
+        "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_CLIENT_SECRET", "GSC_OAUTH_CLIENT_SECRET",
+        "GOOGLE_OAUTH_REDIRECT_URI", "GSC_CREDENTIALS_FILE", "GSC_TOKEN_FILE",
+        "GEMINI_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY", "ANTHROPIC_API_KEY",
+        "OPENROUTER_MODEL", "OPENROUTER_FALLBACK_MODELS", "GROQ_MODEL",
+        "AI_PROVIDER_ORDER", "AI_MAX_OUTPUT_TOKENS",
+        "OPENROUTER_REQUEST_DELAY_SECONDS", "GROQ_REQUEST_DELAY_SECONDS", "GEMINI_REQUEST_DELAY_SECONDS",
+        "BLOG_IDEAS_AI_QUERY_LIMIT", "BLOG_IDEAS_EXISTING_CONTENT_LIMIT",
+        "OLLAMA_ENABLED", "OLLAMA_BASE_URL", "OLLAMA_MODEL",
+        "SEO_RUNTIME_DIR", "RUNTIME_DIR",
+        "SEO_CRAWL_DELAY", "SEO_REQUEST_TIMEOUT", "SEO_CRAWL_RETRIES", "SEO_CRAWLER_USER_AGENT",
+        "PAGESPEED_API_KEY",
+        "SEO_CHANGELOG_CSV",
+    }
+    keep_prefixes = ("SHOPIFY_",)
+    blocked = {"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "GIT_HTTP_PROXY", "GIT_HTTPS_PROXY"}
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in blocked and (key in keep_exact or key.startswith(keep_prefixes))
+    }
+    if runtime_cfg:
+        env["SEO_RUNTIME_SITE_CONFIG"] = runtime_cfg
+    return env
+
+
 def run_tool_from_form(form) -> dict:
     cmd = build_tool_command(form)
-    env = os.environ.copy()
     runtime_cfg = form.get("_runtime_site_config")
-    if runtime_cfg:
-        env["SEO_RUNTIME_SITE_CONFIG"] = str(runtime_cfg)
-    for key in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "GIT_HTTP_PROXY", "GIT_HTTPS_PROXY"]:
-        env.pop(key, None)
+    env = _tool_subprocess_env(str(runtime_cfg or ""))
 
     completed = subprocess.run(
         cmd,
@@ -1473,7 +1541,8 @@ def start_tool_job(form) -> str:
     job_id = uuid.uuid4().hex
     form_data = dict(form)
     if _is_authenticated():
-        form_data["_runtime_site_config"] = _json_mod.dumps(_load_active_site_config(), ensure_ascii=False)
+        compact_cfg = _compact_runtime_site_config(_load_active_site_config())
+        form_data["_runtime_site_config"] = _json_mod.dumps(compact_cfg, ensure_ascii=False)
     try:
         command_preview = " ".join(build_tool_command(form_data))
     except Exception:
@@ -2077,8 +2146,7 @@ def pages_export_csv():
     writer = csv.writer(out)
     writer.writerow([
         "Fonte", "URL", "Trafego", "Alteracao no trafego", "Trafego %",
-        "Palavras-chave", "Prompts de LLM", "Dominios de ref.",
-        "Principal palavra-chave", "Intencao",
+        "Palavras-chave", "Principal palavra-chave",
     ])
     for row in rows:
         writer.writerow([
@@ -2088,10 +2156,7 @@ def pages_export_csv():
             row.get("traffic_delta", 0),
             row.get("traffic_share", 0),
             row.get("keywords", 0),
-            row.get("llm_prompts", 0),
-            row.get("ref_domains", 0),
             row.get("top_keyword", ""),
-            row.get("intent_label", ""),
         ])
     return Response(
         out.getvalue(),
@@ -2182,7 +2247,7 @@ def pages_inventory():
       </select>
     </div>
     <div class="pages-note">
-      Fonte real: Google Search Console. Prompts de LLM e domínios de referência aparecem como 0 até conectarmos fontes próprias para esses dados.
+      Fonte real: Google Search Console. A lista cruza tráfego, variação, participação, volume de palavras-chave e principal termo por URL.
     </div>
     <div class="pages-error" id="pages-error"></div>
     <div class="pages-table-wrap">
@@ -2195,14 +2260,11 @@ def pages_inventory():
             <th data-field="traffic_delta" class="num">Alteração no tráfego</th>
             <th data-field="traffic_share" class="num">Tráfego, %</th>
             <th data-field="keywords" class="num">Palavras-chave</th>
-            <th data-field="llm_prompts" class="num">Prompts de LLM</th>
-            <th data-field="ref_domains" class="num">Domínios de ref.</th>
             <th data-field="top_keyword" style="text-align:left">Principal palavra-chave</th>
-            <th data-field="intent_code">Intenção</th>
           </tr>
         </thead>
         <tbody id="pages-tbody">
-          <tr><td colspan="10" class="pages-loading">Carregando páginas...</td></tr>
+          <tr><td colspan="7" class="pages-loading">Carregando páginas...</td></tr>
         </tbody>
       </table>
     </div>
@@ -2250,14 +2312,13 @@ def pages_inventory():
     $('pages-export').href = exportHref();
 
     if (!list.length) {
-      $('pages-tbody').innerHTML = '<tr><td colspan="10" class="pages-empty">Nenhuma página encontrada.</td></tr>';
+      $('pages-tbody').innerHTML = '<tr><td colspan="7" class="pages-empty">Nenhuma página encontrada.</td></tr>';
       return;
     }
     $('pages-tbody').innerHTML = list.map(r => {
       const delta = Number(r.traffic_delta || 0);
       const deltaCls = delta > 0 ? 'delta-pos' : delta < 0 ? 'delta-neg' : 'delta-zero';
       const deltaTxt = (delta > 0 ? '+' : '') + fmtCompact(delta) + (delta > 0 ? ' ↑' : delta < 0 ? ' ↓' : '');
-      const intent = esc(r.intent_code || 'I');
       return `<tr>
         <td><span class="source-pill">${esc(r.source || 'GSC')}</span></td>
         <td class="url-cell"><a class="url-link" href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.url)}</a></td>
@@ -2265,10 +2326,7 @@ def pages_inventory():
         <td class="num ${deltaCls}">${deltaTxt}</td>
         <td class="num">${Number(r.traffic_share || 0).toFixed(2).replace('.', ',')}</td>
         <td class="num" style="color:#0068d7">${fmt(r.keywords)}</td>
-        <td class="num" style="color:#0068d7">${fmt(r.llm_prompts)}</td>
-        <td class="num" style="color:#0068d7">${fmt(r.ref_domains)}</td>
         <td style="color:#0068d7">${esc(r.top_keyword || '—')}</td>
-        <td><span class="intent-pill intent-${intent}" title="${esc(r.intent_label || '')}">${intent}</span></td>
       </tr>`;
     }).join('');
   }
