@@ -3269,6 +3269,22 @@ def delete_kanban_card(rec_id):
 
 
 
+def _looks_like_blog_article_html(html: str, raw: dict | None = None) -> bool:
+    text = str(html or "").strip()
+    if not text:
+        return False
+    raw = raw if isinstance(raw, dict) else {}
+    try:
+        generated_len = int(raw.get("blog_content_length") or 0)
+    except (TypeError, ValueError):
+        generated_len = 0
+    if re.search(r"<article\b", text, re.IGNORECASE):
+        return True
+    if raw.get("blog_content_generated_at") or generated_len > 0:
+        return len(text) > 100 and bool(re.search(r"<(h1|h2|p|section|details|table)\b", text, re.IGNORECASE))
+    return len(text) > 800 and bool(re.search(r"<(h1|h2|p|section|details|table)\b", text, re.IGNORECASE))
+
+
 @app.route("/blog-ideas")
 def blog_ideas():
     try:
@@ -3318,7 +3334,7 @@ def blog_ideas():
         row_id    = str(row.get("id") or "")
         row_title = esc(row.get("meta_title", "") or "")
         meta_desc = esc(row.get("meta_description", "") or "")
-        has_content = bool(str(row.get("description_html") or "").strip())
+        has_content = _looks_like_blog_article_html(row.get("description_html"), raw)
         btn_label = "Ver conteúdo" if has_content else "Gerar conteúdo"
         btn_icon  = "📄" if has_content else "✨"
 
@@ -3804,6 +3820,12 @@ def blog_idea_content(idea_id):
         return jsonify({"html": None, "error": "Conteudo salvo nao encontrado. Gere o conteudo primeiro."}), 404
 
     raw = row.get("raw") or {}
+    if not _looks_like_blog_article_html(html_content, raw):
+        return jsonify({
+            "html": None,
+            "error": "Conteudo completo ainda nao foi gerado. Clique em Regenerar para criar o artigo.",
+        }), 404
+
     provider = raw.get("blog_content_provider") or row.get("provider") or "banco"
     return jsonify({"html": html_content, "error": None, "provider": provider})
 

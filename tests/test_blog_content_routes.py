@@ -155,6 +155,46 @@ def test_blog_ideas_page_opens_saved_content_when_html_exists(monkeypatch):
     assert "blog-idea-check" in html
 
 
+def test_blog_ideas_page_does_not_treat_outline_as_saved_content(monkeypatch):
+    monkeypatch.setenv("AUTH_REQUIRED", "0")
+    fake = _FakeSupabase({
+        "idea-brief": {
+            "id": "idea-brief",
+            "status": "idea",
+            "provider": "query_suggester",
+            "meta_title": "Pauta Brief",
+            "meta_description": "Ainda sem artigo",
+            "description_html": "Introducao\nMelhores marcas\nConclusao",
+            "raw": {"queries": ["calca jeans"], "sections": ["Introducao", "Conclusao"]},
+            "created_at": "2026-06-02T10:00:00+00:00",
+        }
+    })
+    monkeypatch.setattr(dashboard, "get_supabase", lambda: fake)
+
+    html = dashboard.app.test_client().get("/blog-ideas").get_data(as_text=True)
+
+    assert "openBlogContent('idea-brief','Pauta Brief',false)" in html
+    assert "openBlogContent('idea-brief','Pauta Brief',true)" not in html
+
+
+def test_blog_content_view_rejects_outline_saved_in_description_html(monkeypatch):
+    monkeypatch.setenv("AUTH_REQUIRED", "0")
+    fake = _FakeSupabase({
+        "idea-outline": {
+            "id": "idea-outline",
+            "description_html": "Introducao\nMelhores marcas\nConclusao",
+            "provider": "query_suggester",
+            "raw": {"sections": ["Introducao", "Conclusao"]},
+        }
+    })
+    monkeypatch.setattr(dashboard, "get_supabase", lambda: fake)
+
+    response = dashboard.app.test_client().get("/blog-ideas/idea-outline/content")
+
+    assert response.status_code == 404
+    assert "ainda nao foi gerado" in response.get_json()["error"]
+
+
 def test_blog_ideas_delete_removes_selected_ideas(monkeypatch):
     monkeypatch.setenv("AUTH_REQUIRED", "0")
     fake = _FakeSupabase({
@@ -191,3 +231,44 @@ def test_blog_ideas_delete_requires_selection(monkeypatch):
 
     assert response.status_code == 400
     assert "Selecione" in response.get_json()["error"]
+
+
+def test_save_blog_ideas_keeps_description_html_empty_until_article_is_generated(monkeypatch):
+    from modules import supabase_store
+
+    class _InsertTable:
+        def __init__(self):
+            self.inserted = []
+
+        def insert(self, rows):
+            self.inserted = rows
+            return self
+
+        def execute(self):
+            return _FakeResult(self.inserted)
+
+    class _InsertSupabase:
+        def __init__(self):
+            self.content_changes = _InsertTable()
+
+        def table(self, name):
+            assert name == "content_changes"
+            return self.content_changes
+
+    fake = _InsertSupabase()
+    monkeypatch.setattr(supabase_store, "_client", lambda: fake)
+    monkeypatch.setattr(supabase_store, "_upsert_site", lambda *_args, **_kwargs: "site-1")
+    monkeypatch.setattr(supabase_store, "_upsert_url", lambda *_args, **_kwargs: "url-1")
+    monkeypatch.setattr(supabase_store, "_full_url", lambda url: "https://example.com" + url)
+
+    saved = supabase_store.save_blog_ideas([{
+        "url_slug": "melhores-calcas-jeans",
+        "provider": "query_suggester+groq",
+        "meta_title": "Melhores calcas jeans",
+        "sections": ["Introducao", "Melhores marcas", "Conclusao"],
+    }])
+
+    assert saved == 1
+    row = fake.content_changes.inserted[0]
+    assert row["description_html"] == ""
+    assert row["raw"]["sections"] == ["Introducao", "Melhores marcas", "Conclusao"]

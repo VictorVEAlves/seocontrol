@@ -785,7 +785,7 @@ def save_blog_ideas(ideas: list) -> int:
             "meta_title": idea.get("meta_title"),
             "meta_description": idea.get("meta_description"),
             "h1": idea.get("h1"),
-            "description_html": "\n".join(idea.get("sections", [])),
+            "description_html": "",
             "generated_at": idea.get("generated_at"),
             "raw": _clean(idea),
         })
