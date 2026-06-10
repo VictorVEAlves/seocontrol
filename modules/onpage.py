@@ -2,7 +2,7 @@ import json
 from modules.crawler import get_page, extract_links, is_internal
 from config import get_site_url as _get_site_url
 
-HTML_SIZE_WARN_KB = 500
+HTML_SIZE_WARN_KB = 2560
 
 TITLE_MIN = 30
 TITLE_MAX = 70

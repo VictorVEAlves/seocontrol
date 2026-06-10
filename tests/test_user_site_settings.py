@@ -83,6 +83,7 @@ class _Supabase:
                         "gsc_property": "https://old.example.com/",
                         "gsc_token_json": '{"token":"abc"}',
                         "available_gsc_sites": ["https://example.com/", "sc-domain:example.com"],
+                        "available_ga4_properties": [{"property": "properties/123", "display_name": "GA4 Example"}],
                         "gsc_account_email": "user@example.com",
                         "ai_api_keys": {"gemini": "gemini-key"},
                     },
@@ -108,6 +109,7 @@ def test_saving_site_form_preserves_gsc_auth_and_private_settings(monkeypatch):
             "site_url": "https://example.com",
             "site_name": "Example",
             "gsc_property": "sc-domain:example.com",
+            "ga4_property": "456",
             "business_context": "Contexto atualizado",
         })
 
@@ -116,6 +118,8 @@ def test_saving_site_form_preserves_gsc_auth_and_private_settings(monkeypatch):
     assert settings["business_context"] == "Contexto atualizado"
     assert settings["gsc_token_json"] == '{"token":"abc"}'
     assert settings["available_gsc_sites"] == ["https://example.com/", "sc-domain:example.com"]
+    assert settings["ga4_property"] == "properties/456"
+    assert settings["available_ga4_properties"] == [{"property": "properties/123", "display_name": "GA4 Example"}]
     assert settings["gsc_account_email"] == "user@example.com"
     assert settings["ai_api_keys"] == {"gemini": "gemini-key"}
     assert "_new_site" not in settings

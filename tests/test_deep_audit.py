@@ -94,3 +94,33 @@ def test_full_audit_screen_exposes_deep_crawler(monkeypatch):
     assert "100.000 paginas do site" in html
     assert "/deep-audit/start" in html
     assert "function cancelDeepAudit()" in html
+
+
+def test_audit_stream_replays_events_to_multiple_clients(monkeypatch):
+    monkeypatch.setattr(dashboard, "_auth_required", lambda: False)
+    job_id = "stream-replay-test"
+
+    with dashboard._AUDIT_LOCK:
+        dashboard._AUDIT_JOBS.pop(job_id, None)
+    dashboard._audit_register(job_id)
+    dashboard._audit_publish(job_id, {
+        "step": "onpage",
+        "label": "Auditoria On-Page",
+        "status": "running",
+        "summary": "100/200 URLs analisadas",
+        "data": {},
+    })
+    dashboard._audit_publish(job_id, {"done": True, "health": 90})
+
+    try:
+        client = dashboard.app.test_client()
+        first = client.get(f"/full-audit/stream/{job_id}").get_data(as_text=True)
+        second = client.get(f"/full-audit/stream/{job_id}").get_data(as_text=True)
+
+        assert '"step": "onpage"' in first
+        assert '"summary": "100/200 URLs analisadas"' in first
+        assert '"step": "onpage"' in second
+        assert '"done": true' in second
+    finally:
+        with dashboard._AUDIT_LOCK:
+            dashboard._AUDIT_JOBS.pop(job_id, None)

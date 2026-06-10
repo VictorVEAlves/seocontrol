@@ -252,6 +252,19 @@ def get_gsc_property() -> str:
     return prop if prop.endswith("/") else prop + "/"
 
 
+def get_ga4_property() -> str:
+    """Return the GA4 property resource name for the active site."""
+    cfg = _load_site_config()
+    prop = str(cfg.get("ga4_property") or os.environ.get("GA4_PROPERTY_ID") or "").strip()
+    if not prop:
+        return ""
+    if prop.isdigit():
+        return f"properties/{prop}"
+    if prop.startswith("properties/"):
+        return prop
+    return prop
+
+
 def _resolve_runtime_path(value: str, fallback: Path) -> Path:
     path = Path(str(value or fallback))
     return path if path.is_absolute() else BASE_DIR / path

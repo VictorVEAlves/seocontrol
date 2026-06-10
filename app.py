@@ -19,7 +19,7 @@ from supabase import Client, create_client
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from config import (disable_broken_local_proxy, BASE_DIR,
-                    get_site_url, get_gsc_property, get_site_name, save_site_config,
+                    get_site_url, get_gsc_property, get_ga4_property, get_site_name, save_site_config,
                     set_runtime_site_config, clear_runtime_site_config,
                     get_gsc_credentials_file, get_gsc_token_file, get_gsc_token_json,
                     get_runtime_dir)
@@ -210,6 +210,15 @@ def _normalize_site_url(value: str) -> str:
     return url
 
 
+def _normalize_ga4_property(value: str) -> str:
+    prop = str(value or "").strip()
+    if not prop:
+        return ""
+    if prop.isdigit():
+        return f"properties/{prop}"
+    return prop
+
+
 def _default_site_name(site_url: str) -> str:
     host = urlparse(site_url).netloc or site_url
     return host[4:] if host.startswith("www.") else host
@@ -377,6 +386,7 @@ def _save_user_site_config(config: dict) -> str:
     if gsc_property and not gsc_property.endswith("/"):
         gsc_property += "/"
     settings["gsc_property"] = gsc_property or ((site_url + "/") if site_url else "")
+    settings["ga4_property"] = _normalize_ga4_property(settings.get("ga4_property") or "")
     settings.update(_user_site_gsc_paths(uid, str(site_id)))
     now = datetime.now(timezone.utc).isoformat()
     payload = {
@@ -421,6 +431,7 @@ def _site_has_gsc_token(cfg: dict | None = None) -> bool:
 
 GSC_OAUTH_SCOPES = [
     "https://www.googleapis.com/auth/webmasters.readonly",
+    "https://www.googleapis.com/auth/analytics.readonly",
     "https://www.googleapis.com/auth/userinfo.email",
     "openid",
 ]
@@ -1270,6 +1281,7 @@ def styles() -> str:
 
 NAV_ICONS = {
     "dashboard": '<svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="6" height="6" rx="1.5"/><rect x="9" y="1" width="6" height="6" rx="1.5"/><rect x="1" y="9" width="6" height="6" rx="1.5"/><rect x="9" y="9" width="6" height="6" rx="1.5"/></svg>',
+    "analytics": '<svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 13.5h12"/><rect x="3" y="8" width="2.5" height="4.5" rx=".7"/><rect x="7" y="5" width="2.5" height="7.5" rx=".7"/><rect x="11" y="2.5" width="2.5" height="10" rx=".7"/></svg>',
     "pages":     '<svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="12" height="12" rx="1.5"/><line x1="5" y1="5" x2="11" y2="5"/><line x1="5" y1="8" x2="11" y2="8"/><line x1="5" y1="11" x2="9" y2="11"/></svg>',
     "issues":    '<svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6.5"/><line x1="8" y1="5" x2="8" y2="8.5"/><circle cx="8" cy="11" r=".6" fill="currentColor" stroke="none"/></svg>',
     "backlog":   '<svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><line x1="3" y1="4" x2="13" y2="4"/><line x1="3" y1="8" x2="13" y2="8"/><line x1="3" y1="12" x2="9" y2="12"/></svg>',
@@ -1327,6 +1339,7 @@ def page_shell(title: str, body: str, active: str = "") -> str:
       <div class="nav-label">Principal</div>
       <nav class="nav">
         {nav_link("/", "Dashboard", "dashboard")}
+        {nav_link("/analytics", "Analytics", "analytics")}
         {nav_link("/pages", "Páginas", "pages")}
         {nav_link("/kanban", "Kanban", "kanban")}
       </nav>
@@ -1448,6 +1461,7 @@ _RUNTIME_TOOL_CONFIG_KEYS = {
     "gsc_token_file",
     "gsc_token_json",
     "gsc_account_email",
+    "ga4_property",
     "business_context",
     "content_guidelines",
     "priority_pages",
@@ -2377,6 +2391,492 @@ def pages_inventory():
 </script>
 """
     return page_shell("Páginas", body)
+
+
+def _analytics_setup_status() -> tuple[bool, str, dict]:
+    if not _is_authenticated():
+        if not get_ga4_property():
+            return False, "Configure GA4_PROPERTY_ID ou selecione uma propriedade GA4 nas Configuracoes.", {}
+        if not (get_gsc_token_json() or get_gsc_token_file().exists()):
+            return False, "Conecte o Google para acessar o Analytics.", {}
+        return True, "", {}
+    cfg = _load_active_site_config()
+    if not cfg.get("site_url"):
+        return False, "Cadastre o site antes de carregar dados do Analytics.", cfg
+    if not _site_has_gsc_token(cfg):
+        return False, "Conecte o Google nas Configuracoes para liberar Analytics.", cfg
+    if not cfg.get("ga4_property"):
+        return False, "Selecione a propriedade GA4 nas Configuracoes.", cfg
+    return True, "", cfg
+
+
+@app.route("/analytics/data")
+def analytics_data():
+    ready, message, cfg = _analytics_setup_status()
+    if not ready:
+        return jsonify({"error": message, "setup_required": True}), 400
+    initial_token_json = str((cfg or {}).get("gsc_token_json") or "")
+    try:
+        period = max(7, min(365, int(request.args.get("period", 28))))
+    except (ValueError, TypeError):
+        period = 28
+    channel = request.args.get("channel", "all")
+    try:
+        from modules.ga4_api import get_analytics_data
+        data = get_analytics_data(period_days=period, force=request.args.get("force") == "1", channel=channel)
+        _persist_dashboard_refreshed_gsc_token(initial_token_json)
+        status = 503 if isinstance(data, dict) and data.get("error") else 200
+        return jsonify(data), status
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+def _analytics_onboarding(message: str) -> str:
+    body = f"""
+<div class="section-head" style="margin-bottom:22px">
+  <div>
+    <h1>Analytics e vendas</h1>
+    <p class="muted" style="margin-top:4px">Conecte o Google Analytics 4 para cruzar trafego, receita e funil de compra.</p>
+  </div>
+  <a href="/settings" class="btn btn-primary">Abrir Configuracoes</a>
+</div>
+<div class="panel" style="max-width:760px;padding:24px">
+  <div style="background:var(--warn-bg);border:1px solid var(--warn);border-radius:10px;padding:14px 16px;margin-bottom:18px;color:var(--ink)">
+    <strong style="display:block;margin-bottom:4px">Analytics ainda nao configurado</strong>
+    <span style="font-size:13px;color:var(--ink-mid)">{esc(message)}</span>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px">
+    <div style="border:1px solid var(--line);border-radius:12px;padding:16px;background:var(--surface)">
+      <strong>1. Conecte o Google</strong>
+      <p class="muted" style="font-size:12px;margin-top:6px">Use o login Google nas Configuracoes.</p>
+    </div>
+    <div style="border:1px solid var(--line);border-radius:12px;padding:16px;background:var(--surface)">
+      <strong>2. Escolha o GA4</strong>
+      <p class="muted" style="font-size:12px;margin-top:6px">Selecione a propriedade Analytics do cliente.</p>
+    </div>
+    <div style="border:1px solid var(--line);border-radius:12px;padding:16px;background:var(--surface)">
+      <strong>3. Leia vendas</strong>
+      <p class="muted" style="font-size:12px;margin-top:6px">Veja receita, compras, canais, paginas e funil.</p>
+    </div>
+  </div>
+</div>"""
+    return page_shell("Analytics", body)
+
+
+@app.route("/analytics")
+def analytics_page():
+    ready, setup_message, _cfg = _analytics_setup_status()
+    if not ready:
+        return _analytics_onboarding(setup_message)
+
+    body = """
+<style>
+  .analytics-header { display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:18px;flex-wrap:wrap; }
+  .analytics-title h1 { font-size:22px;margin:0;color:var(--ink); }
+  .analytics-title p { margin-top:4px;font-size:13px;color:var(--muted); }
+  .analytics-periods { display:flex;align-items:center;gap:8px;flex-wrap:wrap; }
+  .analytics-period { border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:999px;padding:7px 14px;font-size:12px;font-weight:800;cursor:pointer; }
+  .analytics-period.active { background:var(--brand);color:#fff;border-color:var(--brand); }
+  .analytics-channel-select { min-width:190px;border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:999px;padding:8px 12px;font-size:12px;font-weight:800;outline:none; }
+  .analytics-kpis { display:grid;grid-template-columns:repeat(4,minmax(160px,1fr));gap:12px;margin-bottom:16px; }
+  .analytics-kpi { background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;box-shadow:var(--shadow-sm); }
+  .analytics-kpi-label { font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);font-weight:800;margin-bottom:8px; }
+  .analytics-kpi-value { font-size:28px;font-weight:900;color:var(--ink);line-height:1; }
+  .analytics-kpi-prev { margin-top:6px;font-size:11px;color:var(--muted); }
+  .analytics-delta { display:inline-flex;margin-top:8px;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:800; }
+  .analytics-delta.up { background:var(--ok-bg);color:var(--ok); }
+  .analytics-delta.down { background:var(--bad-bg);color:var(--bad); }
+  .analytics-delta.flat { background:var(--line-light);color:var(--muted); }
+  .analytics-grid { display:grid;grid-template-columns:1.35fr .65fr;gap:14px;margin-bottom:16px; }
+  .analytics-card { background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:18px 20px;box-shadow:var(--shadow-sm); }
+  .analytics-card h2 { font-size:15px;margin-bottom:12px;color:var(--ink); }
+  .analytics-chart { position:relative;height:310px; }
+  .analytics-funnel { display:flex;flex-direction:column;gap:10px; }
+  .funnel-step { border:1px solid var(--line);border-radius:10px;padding:11px 12px;background:var(--panel); }
+  .funnel-step-top { display:flex;justify-content:space-between;gap:10px;font-size:12px;font-weight:800;color:var(--ink); }
+  .funnel-bar { height:7px;background:var(--line-light);border-radius:999px;overflow:hidden;margin:9px 0 6px; }
+  .funnel-fill { height:100%;background:linear-gradient(90deg,var(--accent),var(--brand));border-radius:999px; }
+  .funnel-meta { font-size:11px;color:var(--muted);display:flex;justify-content:space-between;gap:8px; }
+  .analytics-seo-card { margin-bottom:16px; }
+  .seo-funnel-grid { display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:10px;margin-top:12px; }
+  .seo-step { border:1px solid var(--line);border-radius:12px;background:var(--panel);padding:13px 14px; }
+  .seo-step-label { font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);font-weight:900;margin-bottom:7px; }
+  .seo-step-value { font-size:20px;font-weight:900;color:var(--ink); }
+  .seo-step-meta { margin-top:5px;font-size:11px;color:var(--muted); }
+  .seo-metric-row { display:grid;grid-template-columns:repeat(4,minmax(140px,1fr));gap:10px;margin-top:12px; }
+  .seo-metric { border:1px solid var(--line-light);border-radius:10px;padding:10px 12px;background:var(--surface);font-size:12px;color:var(--muted); }
+  .seo-metric strong { display:block;color:var(--ink);font-size:16px;margin-top:4px; }
+  .analytics-table-wrap { overflow:auto; }
+  .analytics-table { width:100%;border-collapse:collapse;font-size:12px; }
+  .analytics-table th { text-align:left;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em;padding:9px 10px;border-bottom:1px solid var(--line);white-space:nowrap; }
+  .analytics-table th.sortable { cursor:pointer;user-select:none; }
+  .analytics-table th.sortable:hover { color:var(--ink);background:var(--line-light); }
+  .analytics-table th.sortable::after { content:'↕';font-size:10px;margin-left:6px;color:var(--muted);opacity:.55; }
+  .analytics-table th.sortable.sort-asc::after { content:'↑';opacity:1;color:var(--brand); }
+  .analytics-table th.sortable.sort-desc::after { content:'↓';opacity:1;color:var(--brand); }
+  .analytics-table td { padding:10px;border-bottom:1px solid var(--line-light);vertical-align:top; }
+  .analytics-table .num { text-align:right;font-variant-numeric:tabular-nums; }
+  .analytics-error { display:none;background:var(--bad-bg);border:1px solid var(--bad);color:var(--bad);border-radius:10px;padding:12px 14px;font-size:13px;font-weight:800;margin-bottom:14px; }
+  .analytics-loading { display:none;align-items:center;gap:12px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:13px 15px;margin-bottom:14px;box-shadow:var(--shadow-sm);color:var(--ink); }
+  .analytics-loading.show { display:flex; }
+  .analytics-spinner { width:18px;height:18px;border:3px solid var(--line);border-top-color:var(--brand);border-radius:50%;animation:analyticsSpin .8s linear infinite;flex:0 0 auto; }
+  .analytics-loading-title { display:block;font-size:13px;font-weight:900; }
+  .analytics-loading-detail { display:block;font-size:12px;color:var(--muted);margin-top:2px; }
+  .analytics-content { transition:opacity .18s ease, filter .18s ease; }
+  .analytics-content.loading { opacity:.48;filter:grayscale(.15);pointer-events:none; }
+  .analytics-period:disabled, .analytics-channel-select:disabled, #analytics-refresh:disabled { opacity:.62;cursor:wait; }
+  .sk { background:linear-gradient(90deg,var(--line-light) 25%,var(--line) 50%,var(--line-light) 75%);background-size:200% 100%;animation:shimmer 1.4s infinite;border-radius:4px;display:inline-block; }
+  @keyframes analyticsSpin { to { transform:rotate(360deg); } }
+  @keyframes shimmer {0%{background-position:200% 0}100%{background-position:-200% 0}}
+  @media(max-width:980px){ .analytics-kpis{grid-template-columns:repeat(2,1fr)} .analytics-grid{grid-template-columns:1fr} .seo-funnel-grid{grid-template-columns:repeat(2,1fr)} .seo-metric-row{grid-template-columns:repeat(2,1fr)} }
+  @media(max-width:620px){ .analytics-kpis{grid-template-columns:1fr} .seo-funnel-grid{grid-template-columns:1fr} .seo-metric-row{grid-template-columns:1fr} }
+</style>
+
+<div class="analytics-header">
+  <div class="analytics-title">
+    <h1>Analytics e vendas</h1>
+    <p>Receita, compras, ticket medio, canais e funil de conversao com dados do GA4.</p>
+  </div>
+  <div class="analytics-periods">
+    <select class="analytics-channel-select" id="analytics-channel" title="Filtrar por canal">
+      <option value="all">Todos os canais</option>
+      <option value="organic">SEO organico</option>
+      <option value="Organic Search">Organic Search</option>
+      <option value="Organic Shopping">Organic Shopping</option>
+      <option value="Cross-network">Cross-network</option>
+      <option value="Paid Search">Paid Search</option>
+      <option value="Direct">Direct</option>
+      <option value="Paid Social">Paid Social</option>
+      <option value="Email">Email</option>
+      <option value="Referral">Referral</option>
+      <option value="Display">Display</option>
+    </select>
+    <button class="analytics-period" data-days="7">7 dias</button>
+    <button class="analytics-period active" data-days="28">28 dias</button>
+    <button class="analytics-period" data-days="90">3 meses</button>
+    <button class="btn btn-sm" id="analytics-refresh" type="button">Atualizar</button>
+  </div>
+</div>
+
+<div class="analytics-error" id="analytics-error"></div>
+
+<div class="analytics-loading" id="analytics-loading" role="status" aria-live="polite">
+  <span class="analytics-spinner" aria-hidden="true"></span>
+  <span>
+    <span class="analytics-loading-title" id="analytics-loading-title">Carregando Analytics</span>
+    <span class="analytics-loading-detail" id="analytics-loading-detail">Buscando dados no GA4 e GSC...</span>
+  </span>
+</div>
+
+<div class="analytics-content" id="analytics-content">
+<div class="analytics-kpis">
+  <div class="analytics-kpi"><div class="analytics-kpi-label">Receita total</div><div class="analytics-kpi-value" id="ak-revenue"><span class="sk" style="width:110px;height:28px"></span></div><div id="ad-revenue"></div><div class="analytics-kpi-prev" id="ap-revenue"></div></div>
+  <div class="analytics-kpi"><div class="analytics-kpi-label">Compras totais</div><div class="analytics-kpi-value" id="ak-purchases"><span class="sk" style="width:70px;height:28px"></span></div><div id="ad-purchases"></div><div class="analytics-kpi-prev" id="ap-purchases"></div></div>
+  <div class="analytics-kpi"><div class="analytics-kpi-label">Receita media</div><div class="analytics-kpi-value" id="ak-avg_purchase_revenue"><span class="sk" style="width:100px;height:28px"></span></div><div id="ad-avg_purchase_revenue"></div><div class="analytics-kpi-prev" id="ap-avg_purchase_revenue"></div></div>
+  <div class="analytics-kpi"><div class="analytics-kpi-label">Taxa de compra</div><div class="analytics-kpi-value" id="ak-conversion_rate"><span class="sk" style="width:70px;height:28px"></span></div><div id="ad-conversion_rate"></div><div class="analytics-kpi-prev" id="ap-conversion_rate"></div></div>
+</div>
+
+<div class="analytics-card analytics-seo-card">
+  <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">
+    <div>
+      <h2 style="margin:0 0 4px">Funil SEO: da impressao a receita</h2>
+      <p class="muted" style="margin:0;font-size:12px">Cruza GSC com GA4 organico para mostrar o caminho completo ate a venda.</p>
+    </div>
+    <span class="muted" id="analytics-seo-period" style="font-size:12px"></span>
+  </div>
+  <div class="seo-funnel-grid" id="analytics-seo-funnel">
+    <div class="seo-step"><span class="sk" style="width:100%;height:48px"></span></div>
+  </div>
+  <div class="seo-metric-row" id="analytics-seo-metrics"></div>
+  <div class="analytics-error" id="analytics-seo-error" style="margin:12px 0 0"></div>
+</div>
+
+<div class="analytics-grid">
+  <div class="analytics-card">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px">
+      <h2 style="margin:0">Receita por dia</h2>
+      <span class="muted" id="analytics-period-label" style="font-size:12px"></span>
+    </div>
+    <div class="analytics-chart"><canvas id="analytics-chart"></canvas></div>
+  </div>
+  <div class="analytics-card">
+    <h2>Funil ate a compra</h2>
+    <div class="analytics-funnel" id="analytics-funnel">
+      <div class="funnel-step"><span class="sk" style="width:80%;height:14px"></span></div>
+    </div>
+  </div>
+</div>
+
+<div class="analytics-grid">
+  <div class="analytics-card">
+    <h2>Canais que geram receita</h2>
+    <div class="analytics-table-wrap"><table class="analytics-table" data-table="channels"><thead><tr><th class="sortable" data-sort-key="channel">Canal</th><th class="num sortable" data-sort-key="revenue">Receita</th><th class="num sortable" data-sort-key="purchases">Compras</th><th class="num sortable" data-sort-key="sessions">Sessoes</th><th class="num sortable" data-sort-key="conversion_rate">Taxa</th></tr></thead><tbody id="analytics-channels"></tbody></table></div>
+  </div>
+  <div class="analytics-card">
+    <h2>Produtos vendidos</h2>
+    <div class="analytics-table-wrap"><table class="analytics-table" data-table="products"><thead><tr><th class="sortable" data-sort-key="item">Produto</th><th class="num sortable" data-sort-key="revenue">Receita</th><th class="num sortable" data-sort-key="items">Itens</th></tr></thead><tbody id="analytics-products"></tbody></table></div>
+  </div>
+</div>
+
+<div class="analytics-card">
+  <h2>Landing pages com receita</h2>
+  <div class="analytics-table-wrap"><table class="analytics-table" data-table="landings"><thead><tr><th class="sortable" data-sort-key="landing_page">Pagina de entrada</th><th class="num sortable" data-sort-key="revenue">Receita</th><th class="num sortable" data-sort-key="purchases">Compras</th><th class="num sortable" data-sort-key="sessions">Sessoes</th><th class="num sortable" data-sort-key="conversion_rate">Taxa</th></tr></thead><tbody id="analytics-landings"></tbody></table></div>
+</div>
+
+<div class="analytics-card" style="margin-top:16px">
+  <h2>Paginas SEO: busca ate venda</h2>
+  <div class="analytics-table-wrap"><table class="analytics-table" data-table="seoPages"><thead><tr><th class="sortable" data-sort-key="landing_page">Pagina</th><th class="num sortable" data-sort-key="impressions">Impressoes</th><th class="num sortable" data-sort-key="clicks">Cliques</th><th class="num sortable" data-sort-key="ctr">CTR</th><th class="num sortable" data-sort-key="sessions">Sessoes</th><th class="num sortable" data-sort-key="revenue">Receita</th><th class="num sortable" data-sort-key="purchases">Compras</th><th class="num sortable" data-sort-key="revenue_per_click">R$/clique</th></tr></thead><tbody id="analytics-seo-pages"></tbody></table></div>
+</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script>
+(function() {
+  let activeDays = 28;
+  let activeChannel = 'all';
+  let chart = null;
+  let currentAnalyticsData = null;
+  const tableSort = {
+    channels: { key: 'revenue', dir: 'desc' },
+    products: { key: 'revenue', dir: 'desc' },
+    landings: { key: 'revenue', dir: 'desc' },
+    seoPages: { key: 'revenue', dir: 'desc' },
+  };
+  const brl = new Intl.NumberFormat('pt-BR', { style:'currency', currency:'BRL' });
+  const num = new Intl.NumberFormat('pt-BR');
+  const pct = v => Number(v || 0).toFixed(2).replace('.', ',') + '%';
+  const esc = s => String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+  function dateBR(value) {
+    const parts = String(value || '').split('-');
+    if (parts.length === 3) return parts[2] + '/' + parts[1] + '/' + parts[0];
+    return value || '';
+  }
+
+  function rangeBR(start, end, fallback) {
+    if (start && end) return dateBR(start) + ' - ' + dateBR(end);
+    return fallback || '';
+  }
+
+  function selectedChannelLabel() {
+    const select = document.getElementById('analytics-channel');
+    return select && select.selectedOptions && select.selectedOptions[0] ? select.selectedOptions[0].textContent : 'Todos os canais';
+  }
+
+  function setAnalyticsLoading(isLoading, force) {
+    const box = document.getElementById('analytics-loading');
+    const content = document.getElementById('analytics-content');
+    const detail = document.getElementById('analytics-loading-detail');
+    if (box) box.classList.toggle('show', isLoading);
+    if (content) content.classList.toggle('loading', isLoading);
+    if (detail && isLoading) {
+      const mode = force ? 'Atualizando' : 'Carregando';
+      detail.textContent = mode + ' dados para ' + selectedChannelLabel() + '. Isso pode levar alguns segundos.';
+    }
+    document.querySelectorAll('.analytics-period, #analytics-refresh, #analytics-channel').forEach(el => {
+      el.disabled = isLoading;
+    });
+  }
+
+  function deltaHtml(delta) {
+    if (delta === null || delta === undefined) return '';
+    const cls = Math.abs(delta) < 0.1 ? 'flat' : (delta > 0 ? 'up' : 'down');
+    const symbol = delta > 0 ? '▲' : (delta < 0 ? '▼' : '—');
+    return '<span class="analytics-delta ' + cls + '">' + symbol + ' ' + Math.abs(delta).toFixed(1).replace('.', ',') + '%</span>';
+  }
+
+  function setKpi(key, formatter, data) {
+    const info = (data.kpis || {})[key] || {};
+    document.getElementById('ak-' + key).textContent = formatter(info.value || 0);
+    document.getElementById('ad-' + key).innerHTML = deltaHtml(info.delta);
+    document.getElementById('ap-' + key).textContent = 'Anterior: ' + formatter(info.prev || 0);
+  }
+
+  function renderKpis(data) {
+    setKpi('revenue', brl.format, data);
+    setKpi('purchases', v => num.format(Math.round(Number(v || 0))), data);
+    setKpi('avg_purchase_revenue', brl.format, data);
+    setKpi('conversion_rate', pct, data);
+  }
+
+  function renderChart(data) {
+    const labels = (data.time_series || []).map(r => (r.date || '').slice(5).replace('-', '/'));
+    const revenue = (data.time_series || []).map(r => Number(r.revenue || 0));
+    const prev = (data.previous_time_series || []).map(r => Number(r.revenue || 0));
+    if (chart) chart.destroy();
+    const ctx = document.getElementById('analytics-chart').getContext('2d');
+    chart = new Chart(ctx, {
+      type: 'line',
+      data: { labels, datasets: [
+        { label:'Receita total', data:revenue, borderColor:'#080808', backgroundColor:'rgba(8,8,8,.08)', fill:true, tension:.35, borderWidth:2, pointRadius:2 },
+        { label:'Periodo anterior', data:prev, borderColor:'#d6b25e', backgroundColor:'rgba(214,178,94,.07)', fill:true, tension:.35, borderWidth:2, pointRadius:2 },
+      ] },
+      options: {
+        responsive:true, maintainAspectRatio:false, interaction:{mode:'index',intersect:false},
+        plugins:{ legend:{display:true, labels:{boxWidth:18}}, tooltip:{callbacks:{label:c => c.dataset.label + ': ' + brl.format(c.parsed.y || 0)}} },
+        scales:{ y:{ticks:{callback:v => brl.format(v).replace(',00','')}, grid:{color:'rgba(0,0,0,.06)'}}, x:{grid:{color:'rgba(0,0,0,.035)'}} }
+      }
+    });
+  }
+
+  function renderFunnel(data) {
+    const steps = data.funnel || [];
+    document.getElementById('analytics-funnel').innerHTML = steps.length ? steps.map(s => {
+      const width = Math.max(0, Math.min(100, Number(s.from_start_rate || 0)));
+      const stepRate = s.step_rate == null ? 'inicio' : pct(s.step_rate) + ' da etapa anterior';
+      return '<div class="funnel-step">' +
+        '<div class="funnel-step-top"><span>' + esc(s.label) + '</span><span>' + num.format(s.count || 0) + '</span></div>' +
+        '<div class="funnel-bar"><div class="funnel-fill" style="width:' + width + '%"></div></div>' +
+        '<div class="funnel-meta"><span>' + pct(s.from_start_rate) + ' desde o inicio</span><span>' + stepRate + '</span></div>' +
+      '</div>';
+    }).join('') : '<div class="muted">Sem eventos de funil no periodo.</div>';
+  }
+
+  function renderSeo(data) {
+    const seo = data.seo_funnel || {};
+    const steps = seo.steps || [];
+    const errorEl = document.getElementById('analytics-seo-error');
+    const period = seo.period ? 'GSC ' + seo.period + ' · GA4 ' + (seo.ga4_channels || []).join(' + ') : '';
+    document.getElementById('analytics-seo-period').textContent = period;
+    if (seo.error) {
+      errorEl.textContent = 'GSC indisponivel para o cruzamento: ' + seo.error;
+      errorEl.style.display = 'block';
+    } else {
+      errorEl.style.display = 'none';
+    }
+    document.getElementById('analytics-seo-funnel').innerHTML = steps.length ? steps.map(s => {
+      const value = s.kind === 'money' ? brl.format(Number(s.value || 0)) : num.format(Math.round(Number(s.value || 0)));
+      const meta = s.step_rate == null ? (s.key === 'impressions' ? 'inicio do funil' : '') : pct(s.step_rate) + ' da etapa anterior';
+      return '<div class="seo-step">' +
+        '<div class="seo-step-label">' + esc(s.label) + '</div>' +
+        '<div class="seo-step-value">' + value + '</div>' +
+        '<div class="seo-step-meta">' + esc(meta || 'indicador de receita') + '</div>' +
+      '</div>';
+    }).join('') : '<div class="muted">Sem dados suficientes para montar o funil SEO.</div>';
+
+    const metrics = seo.metrics || {};
+    const metricCards = [
+      ['CTR organico', metrics.ctr == null ? '—' : pct(metrics.ctr)],
+      ['Clique para sessao', metrics.click_to_session_rate == null ? '—' : pct(metrics.click_to_session_rate)],
+      ['Sessao para compra', metrics.session_to_purchase_rate == null ? '—' : pct(metrics.session_to_purchase_rate)],
+      ['Receita por clique', brl.format(Number(metrics.revenue_per_click || 0))],
+    ];
+    document.getElementById('analytics-seo-metrics').innerHTML = metricCards.map(m => '<div class="seo-metric">' + esc(m[0]) + '<strong>' + esc(m[1]) + '</strong></div>').join('');
+  }
+
+  function sortRows(rows, tableName, cols) {
+    const state = tableSort[tableName] || {};
+    const col = cols.find(c => c.key === state.key) || cols[0];
+    const dir = state.dir === 'asc' ? 1 : -1;
+    return [...(rows || [])].sort((a, b) => {
+      const av = a[col.key];
+      const bv = b[col.key];
+      if (col.money || col.pct || col.num) {
+        return ((Number(av || 0) - Number(bv || 0)) * dir);
+      }
+      return String(av || '').localeCompare(String(bv || ''), 'pt-BR', { sensitivity: 'base', numeric: true }) * dir;
+    });
+  }
+
+  function updateSortIndicators() {
+    document.querySelectorAll('.analytics-table').forEach(table => {
+      const tableName = table.dataset.table;
+      const state = tableSort[tableName] || {};
+      table.querySelectorAll('th.sortable').forEach(th => {
+        th.classList.toggle('sort-asc', th.dataset.sortKey === state.key && state.dir === 'asc');
+        th.classList.toggle('sort-desc', th.dataset.sortKey === state.key && state.dir === 'desc');
+      });
+    });
+  }
+
+  function tableRows(rows, cols, empty, tableName) {
+    const sortedRows = tableName ? sortRows(rows, tableName, cols) : (rows || []);
+    updateSortIndicators();
+    if (!sortedRows.length) return '<tr><td colspan="' + cols.length + '" style="text-align:center;color:var(--muted);padding:18px">' + empty + '</td></tr>';
+    return sortedRows.map(r => '<tr>' + cols.map(c => {
+      let value = r[c.key];
+      if (c.money) value = brl.format(Number(value || 0));
+      else if (c.pct) value = pct(value);
+      else if (c.num) value = num.format(Math.round(Number(value || 0)));
+      else value = esc(value || '—');
+      return '<td class="' + (c.cls || '') + '">' + value + '</td>';
+    }).join('') + '</tr>').join('');
+  }
+
+  function renderTables(data) {
+    document.getElementById('analytics-channels').innerHTML = tableRows(data.channels, [
+      {key:'channel'}, {key:'revenue', money:true, cls:'num'}, {key:'purchases', num:true, cls:'num'}, {key:'sessions', num:true, cls:'num'}, {key:'conversion_rate', pct:true, cls:'num'}
+    ], 'Sem canais com receita.', 'channels');
+    document.getElementById('analytics-products').innerHTML = tableRows(data.products, [
+      {key:'item'}, {key:'revenue', money:true, cls:'num'}, {key:'items', num:true, cls:'num'}
+    ], 'Sem produtos no GA4 para o periodo.', 'products');
+    document.getElementById('analytics-landings').innerHTML = tableRows(data.landing_pages, [
+      {key:'landing_page'}, {key:'revenue', money:true, cls:'num'}, {key:'purchases', num:true, cls:'num'}, {key:'sessions', num:true, cls:'num'}, {key:'conversion_rate', pct:true, cls:'num'}
+    ], 'Sem landing pages com receita.', 'landings');
+    document.getElementById('analytics-seo-pages').innerHTML = tableRows(data.seo_landing_pages, [
+      {key:'landing_page'}, {key:'impressions', num:true, cls:'num'}, {key:'clicks', num:true, cls:'num'}, {key:'ctr', pct:true, cls:'num'}, {key:'sessions', num:true, cls:'num'}, {key:'revenue', money:true, cls:'num'}, {key:'purchases', num:true, cls:'num'}, {key:'revenue_per_click', money:true, cls:'num'}
+    ], 'Sem paginas com dados cruzados de GSC e GA4 organico.', 'seoPages');
+  }
+
+  async function load(force) {
+    document.getElementById('analytics-error').style.display = 'none';
+    setAnalyticsLoading(true, force);
+    try {
+      const resp = await fetch('/analytics/data?period=' + activeDays + '&channel=' + encodeURIComponent(activeChannel) + (force ? '&force=1' : ''));
+      const data = await resp.json();
+      if (!resp.ok || data.error) throw new Error(data.error || 'Falha ao carregar Analytics.');
+      const currentPeriod = rangeBR(data.period_start, data.period_end, data.period);
+      const previousPeriod = rangeBR(data.previous_period_start, data.previous_period_end, data.previous_period);
+      document.getElementById('analytics-period-label').textContent = currentPeriod + ' vs ' + previousPeriod + ' · ' + (data.channel_label || 'Todos os canais');
+      renderKpis(data);
+      renderChart(data);
+      renderFunnel(data);
+      renderSeo(data);
+      currentAnalyticsData = data;
+      renderTables(data);
+    } catch (err) {
+      const el = document.getElementById('analytics-error');
+      el.textContent = err.message || 'Falha ao carregar Analytics.';
+      el.style.display = 'block';
+    } finally {
+      setAnalyticsLoading(false, force);
+    }
+  }
+
+  document.querySelectorAll('.analytics-period').forEach(btn => {
+    btn.addEventListener('click', () => {
+      activeDays = Number(btn.dataset.days || 28);
+      document.querySelectorAll('.analytics-period').forEach(b => b.classList.toggle('active', b === btn));
+      load(false);
+    });
+  });
+  document.getElementById('analytics-channel').addEventListener('change', (event) => {
+    activeChannel = event.target.value || 'all';
+    load(false);
+  });
+  document.getElementById('analytics-refresh').addEventListener('click', () => load(true));
+  document.querySelectorAll('.analytics-table th.sortable').forEach(th => {
+    th.addEventListener('click', () => {
+      const table = th.closest('.analytics-table');
+      const tableName = table ? table.dataset.table : '';
+      const key = th.dataset.sortKey;
+      if (!tableName || !key) return;
+      const state = tableSort[tableName] || { key, dir: 'desc' };
+      if (state.key === key) {
+        state.dir = state.dir === 'asc' ? 'desc' : 'asc';
+      } else {
+        state.key = key;
+        state.dir = th.classList.contains('num') ? 'desc' : 'asc';
+      }
+      tableSort[tableName] = state;
+      if (currentAnalyticsData) renderTables(currentAnalyticsData);
+    });
+  });
+  load(false);
+})();
+</script>
+"""
+    return page_shell("Analytics", body)
 
 
 def _dashboard_onboarding(message: str, cfg: dict | None = None):
@@ -6820,9 +7320,12 @@ _AUDIT_CSS = """<style>
 def _audit_register(job_id: str, user_id: str = "", site_id: str = "",
                     context_key: str = "") -> _queue_mod.Queue:
     q: _queue_mod.Queue = _queue_mod.Queue()
+    condition = threading.Condition()
     with _AUDIT_LOCK:
         _AUDIT_JOBS[job_id] = {
             "q": q,
+            "events": [],
+            "condition": condition,
             "status": "running",
             "result": None,
             "user_id": user_id,
@@ -6843,6 +7346,60 @@ def _audit_get(job_id: str) -> dict | None:
     if _auth_required() and job.get("user_id") != _current_user_id():
         return None
     return job
+
+
+def _audit_publish(job_id: str, event: dict) -> None:
+    with _AUDIT_LOCK:
+        job = _AUDIT_JOBS.get(job_id)
+    if not job:
+        return
+    condition = job.get("condition")
+    if not condition:
+        q = job.get("q")
+        if q is not None:
+            q.put(event)
+        return
+    with condition:
+        job.setdefault("events", []).append(event)
+        condition.notify_all()
+
+
+def _audit_stream_response(job: dict):
+    condition = job.get("condition")
+
+    def generate_from_log():
+        index = 0
+        while True:
+            with condition:
+                if index >= len(job.get("events", [])):
+                    condition.wait(timeout=55)
+                events = list(job.get("events", []))
+            if index >= len(events):
+                yield 'data: {"keepalive":true}\n\n'
+                continue
+            while index < len(events):
+                event = events[index]
+                index += 1
+                yield f"data: {_json_mod.dumps(event, ensure_ascii=False)}\n\n"
+                if event.get("done"):
+                    return
+
+    def generate_from_queue():
+        q = job["q"]
+        while True:
+            try:
+                event = q.get(timeout=55)
+                yield f"data: {_json_mod.dumps(event, ensure_ascii=False)}\n\n"
+                if event.get("done"):
+                    break
+            except _queue_mod.Empty:
+                yield 'data: {"keepalive":true}\n\n'
+
+    return Response(
+        stream_with_context(generate_from_log() if condition else generate_from_queue()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 _AUDIT_SCOPE_OPTIONS = OrderedDict([
@@ -7222,8 +7779,8 @@ def _run_deep_audit(job_id: str, q: _queue_mod.Queue, scope_key: str = "10000",
         set_runtime_site_config(site_config)
 
     def emit(step, label, status, summary="", data=None):
-        q.put({"step": step, "label": label, "status": status,
-               "summary": summary, "data": data or {}})
+        _audit_publish(job_id, {"step": step, "label": label, "status": status,
+                                "summary": summary, "data": data or {}})
 
     started_at = datetime.now(timezone.utc)
     result = _deep_audit_empty_summary()
@@ -7298,7 +7855,7 @@ def _run_deep_audit(job_id: str, q: _queue_mod.Queue, scope_key: str = "10000",
                     "result": result,
                     "kind": "deep-audit",
                 })
-        q.put({
+        _audit_publish(job_id, {
             "done": True,
             "status": result["status"],
             "health": result.get("health", 0),
@@ -7315,7 +7872,7 @@ def _run_deep_audit(job_id: str, q: _queue_mod.Queue, scope_key: str = "10000",
                     "kind": "deep-audit",
                 })
         emit("crawl", "Crawler On-Page", "error", str(exc)[:160], {"percent": 100})
-        q.put({"done": True, "status": "error", "report_url": f"/deep-audit/report/{job_id}"})
+        _audit_publish(job_id, {"done": True, "status": "error", "report_url": f"/deep-audit/report/{job_id}"})
 
 
 def _run_full_audit(job_id: str, q: _queue_mod.Queue, scope_key: str = "priority",
@@ -7325,8 +7882,8 @@ def _run_full_audit(job_id: str, q: _queue_mod.Queue, scope_key: str = "priority
         set_runtime_site_config(site_config)
 
     def emit(step, label, status, summary="", data=None):
-        q.put({"step": step, "label": label, "status": status,
-               "summary": summary, "data": data or {}})
+        _audit_publish(job_id, {"step": step, "label": label, "status": status,
+                                "summary": summary, "data": data or {}})
 
     results: dict = {}
 
@@ -7456,7 +8013,7 @@ def _run_full_audit(job_id: str, q: _queue_mod.Queue, scope_key: str = "priority
         results["_persist_error"] = str(exc)
         emit("persist", "Kanban & banco de dados", "warn", f"Relatório gerado, mas Kanban não foi atualizado: {str(exc)[:120]}")
     _save_last_audit(results, audit_context_key, site_config=site_config)
-    q.put({"done": True, "health": health})
+    _audit_publish(job_id, {"done": True, "health": health})
     with _AUDIT_LOCK:
         if job_id in _AUDIT_JOBS:
             _AUDIT_JOBS[job_id].update({"status": "done", "result": results})
@@ -7820,23 +8377,7 @@ def full_audit_stream(job_id):
     job = _audit_get(job_id)
     if not job:
         return jsonify({"error": "job not found"}), 404
-    q = job["q"]
-
-    def generate():
-        while True:
-            try:
-                event = q.get(timeout=55)
-                yield f"data: {_json_mod.dumps(event, ensure_ascii=False)}\n\n"
-                if event.get("done"):
-                    break
-            except _queue_mod.Empty:
-                yield 'data: {"keepalive":true}\n\n'
-
-    return Response(
-        stream_with_context(generate()),
-        mimetype="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    return _audit_stream_response(job)
 
 
 @app.route("/deep-audit/start", methods=["POST"])
@@ -7873,23 +8414,7 @@ def deep_audit_stream(job_id):
     job = _audit_get(job_id)
     if not job or job.get("kind") != "deep-audit":
         return jsonify({"error": "job not found"}), 404
-    q = job["q"]
-
-    def generate():
-        while True:
-            try:
-                event = q.get(timeout=55)
-                yield f"data: {_json_mod.dumps(event, ensure_ascii=False)}\n\n"
-                if event.get("done"):
-                    break
-            except _queue_mod.Empty:
-                yield 'data: {"keepalive":true}\n\n'
-
-    return Response(
-        stream_with_context(generate()),
-        mimetype="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    return _audit_stream_response(job)
 
 
 @app.route("/deep-audit/cancel/<job_id>", methods=["POST"])
@@ -8726,6 +9251,7 @@ def settings():
             site_url     = request.form.get("site_url", "").strip().rstrip("/")
             site_name    = request.form.get("site_name", "").strip()
             gsc_property = request.form.get("gsc_property", "").strip()
+            ga4_property_raw = request.form.get("ga4_property")
             business_context = request.form.get("business_context", "").strip()
             content_guidelines = request.form.get("content_guidelines", "").strip()
             priority_pages = _split_urls(request.form.get("priority_pages", ""))
@@ -8752,6 +9278,8 @@ def settings():
                 "product_terms": product_terms,
                 "commercial_terms": commercial_terms,
             }
+            if ga4_property_raw is not None:
+                site_payload["ga4_property"] = _normalize_ga4_property(ga4_property_raw)
             site_saved = False
             try:
                 if _is_authenticated():
@@ -8880,7 +9408,9 @@ def settings():
     oauth_ready      = _google_oauth_ready()
     has_token        = _site_has_gsc_token(cfg)
     available_sites  = cfg.get("available_gsc_sites") or []
+    available_ga4_properties = cfg.get("available_ga4_properties") or []
     gsc_account      = cfg.get("gsc_account_email", "")
+    current_ga4_property = _normalize_ga4_property(cfg.get("ga4_property") or ("" if _is_authenticated() else get_ga4_property()))
     current_site_name = cfg.get("site_name", "")
     current_context = cfg.get("business_context", "")
     current_guidelines = cfg.get("content_guidelines", "")
@@ -9014,6 +9544,56 @@ def settings():
             padding:16px;margin-bottom:16px;font-size:12px;color:var(--ink-mid);line-height:1.7">
   <strong>Integração Google temporariamente indisponível.</strong><br>
   O login com Google ainda não foi habilitado para este ambiente. Fale com o administrador do sistema.
+</div>"""
+
+    if has_token:
+        if available_ga4_properties:
+            ga4_options = ['<option value="">Selecione uma propriedade GA4</option>']
+            for item in available_ga4_properties:
+                if isinstance(item, dict):
+                    value = _normalize_ga4_property(item.get("property") or "")
+                    label = item.get("display_name") or value
+                    account = item.get("account") or ""
+                    text = f"{label} - {account}" if account else label
+                else:
+                    value = _normalize_ga4_property(str(item))
+                    text = value
+                selected = "selected" if value == current_ga4_property else ""
+                ga4_options.append(f'<option value="{esc(value)}" {selected}>{esc(text)}</option>')
+            ga4_input = (
+                f'<select name="ga4_property" style="width:100%;padding:9px 12px;border:1px solid var(--line);'
+                f'border-radius:6px;font-size:14px;color:var(--ink);background:var(--panel)">'
+                f'{"".join(ga4_options)}</select>'
+            )
+        else:
+            ga4_input = (
+                f'<input name="ga4_property" type="text" value="{esc(current_ga4_property)}" '
+                f'placeholder="properties/123456789" '
+                f'style="width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:6px;font-size:14px;color:var(--ink)"/>'
+            )
+        ga4_panel = f"""
+<div style="margin-top:22px">
+  <h2 style="margin-bottom:14px">Google Analytics 4</h2>
+  <div style="background:var(--info-bg);border:1px solid var(--info);border-radius:8px;padding:12px 16px;margin-bottom:14px;font-size:12px;color:var(--ink-mid);line-height:1.65">
+    Use a mesma conta Google conectada acima. Se a propriedade GA4 nao aparecer, clique em
+    <a href="/settings/gsc/connect" style="font-weight:700;color:var(--brand)">reconectar Google</a>
+    para autorizar tambem o Analytics.
+  </div>
+  <label style="display:block;font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px;
+                text-transform:uppercase;letter-spacing:.04em">Propriedade GA4</label>
+  {ga4_input}
+  <p style="font-size:11px;color:var(--muted);margin-top:5px">
+    Esta propriedade alimenta receita, compras, ticket medio, canais, paginas de entrada e funil de compra.
+  </p>
+</div>"""
+    else:
+        ga4_panel = """
+<div style="margin-top:22px">
+  <h2 style="margin-bottom:14px">Google Analytics 4</h2>
+  <div style="background:var(--line-light);border:1px solid var(--line);border-radius:8px;
+              padding:14px 16px;font-size:12px;color:var(--ink-mid);line-height:1.7">
+    Conecte o Google Search Console acima. O mesmo login tambem sera usado para listar propriedades do Analytics.
+  </div>
 </div>"""
 
     # API keys rows
@@ -9190,6 +9770,7 @@ def settings():
       <hr style="border:none;border-top:1px solid var(--line);margin:0 0 18px">
       <h2 style="margin-bottom:14px">Google Search Console</h2>
       {gsc_panel}
+      {ga4_panel}
 
       <div style="margin-top:20px">
         <button type="submit" class="btn btn-primary">Salvar</button>
@@ -9282,14 +9863,24 @@ def gsc_callback():
         except Exception:
             pass
 
+        ga4_properties: list = []
+        try:
+            from modules.ga4_api import list_ga4_properties
+            ga4_result = list_ga4_properties()
+            ga4_properties = ga4_result.get("properties") or []
+        except Exception:
+            ga4_properties = []
+
         if _is_authenticated():
             _update_active_user_site_config(
                 available_gsc_sites=sites if sites else None,
+                available_ga4_properties=ga4_properties if ga4_properties else None,
                 gsc_account_email=email if email else None,
             )
         else:
             save_site_config(
                 available_gsc_sites=sites if sites else None,
+                available_ga4_properties=ga4_properties if ga4_properties else None,
                 gsc_account_email=email if email else None,
             )
         # Auto-select property if none configured yet, scoped to the current user/site.
@@ -9308,8 +9899,23 @@ def gsc_callback():
                     match = next((s for s in sites if s.rstrip("/") == base), sites[0])
                     save_site_config(gsc_property=match)
 
+        if ga4_properties:
+            first_ga4 = _normalize_ga4_property(ga4_properties[0].get("property") or "")
+            if _is_authenticated():
+                active_cfg = _load_active_site_config()
+                if not active_cfg.get("ga4_property"):
+                    _update_active_user_site_config(ga4_property=first_ga4)
+            else:
+                from config import _load_site_config as _lsc
+                legacy_cfg = _lsc()
+                if not legacy_cfg.get("ga4_property"):
+                    save_site_config(ga4_property=first_ga4)
+
         who = f" como {email}" if email else ""
-        session["gsc_ok"] = f"Conectado{who}. {len(sites)} propriedade(s) encontrada(s)."
+        session["gsc_ok"] = (
+            f"Conectado{who}. {len(sites)} propriedade(s) GSC e "
+            f"{len(ga4_properties)} propriedade(s) GA4 encontrada(s)."
+        )
     except Exception as exc:
         session["gsc_err"] = f"Falha na autenticação Google: {exc}"
 
@@ -9329,9 +9935,14 @@ def gsc_disconnect():
         except OSError:
             pass
     if _is_authenticated():
-        _update_active_user_site_config(available_gsc_sites=None, gsc_account_email=None, gsc_token_json=None)
+        _update_active_user_site_config(
+            available_gsc_sites=None,
+            available_ga4_properties=None,
+            gsc_account_email=None,
+            gsc_token_json=None,
+        )
     else:
-        save_site_config(available_gsc_sites=None, gsc_account_email=None)
+        save_site_config(available_gsc_sites=None, available_ga4_properties=None, gsc_account_email=None)
     session["gsc_ok"] = "Conta Google desconectada."
     return _redirect_public_or_local("settings")
 

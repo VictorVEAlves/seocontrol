@@ -120,6 +120,39 @@ def test_onpage_meta_title_accepts_30_to_70_characters(monkeypatch):
     assert any("longo" in warning for warning in title_warnings_71)
 
 
+def test_onpage_html_size_warns_only_above_2_5mb(monkeypatch):
+    html = """
+    <html>
+      <head>
+        <title>Pagina de teste com titulo adequado</title>
+        <meta name="description" content="Descricao completa para manter a pagina dentro do tamanho minimo esperado pela auditoria on-page do sistema.">
+        <link rel="canonical" href="https://example.com/pagina">
+        <script type="application/ld+json">{"@type":"ItemList"}</script>
+      </head>
+      <body>
+        <h1>Pagina de teste</h1>
+        <h2>Secao de teste</h2>
+        <p>Conteudo suficientemente longo para que o teste foque somente no tamanho do HTML.</p>
+      </body>
+    </html>
+    """
+
+    def audit_with_size(size_kb):
+        def fake_get_page(url):
+            return 200, BeautifulSoup(html, "lxml"), {"_content_size_bytes": size_kb * 1024}, url
+
+        monkeypatch.setattr("modules.onpage.get_page", fake_get_page)
+        return onpage.audit_page("https://example.com/pagina")
+
+    warnings_2500 = audit_with_size(2500)["warnings"]
+    warnings_2560 = audit_with_size(2560)["warnings"]
+    warnings_2561 = audit_with_size(2561)["warnings"]
+
+    assert not any("HTML muito grande" in warning for warning in warnings_2500)
+    assert not any("HTML muito grande" in warning for warning in warnings_2560)
+    assert any("HTML muito grande" in warning for warning in warnings_2561)
+
+
 def test_audit_pages_reports_progress_without_orphan_inference(monkeypatch):
     def fake_audit_page(url, collect_internal_links=False):
         return {
