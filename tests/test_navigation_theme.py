@@ -40,6 +40,7 @@ def test_theme_uses_premium_palette():
 
 
 def test_dashboard_frontend_has_error_timeout_helpers(monkeypatch):
+    monkeypatch.setenv("AUTH_REQUIRED", "0")
     monkeypatch.setattr(dashboard, "_dashboard_setup_status", lambda: (True, "", {}))
     monkeypatch.setattr(dashboard, "_current_site_id", lambda: "")
 
@@ -53,6 +54,7 @@ def test_dashboard_frontend_has_error_timeout_helpers(monkeypatch):
 def test_dashboard_data_uses_error_status(monkeypatch):
     import modules.gsc_api as gsc_api
 
+    monkeypatch.setenv("AUTH_REQUIRED", "0")
     monkeypatch.setattr(dashboard, "_dashboard_setup_status", lambda: (True, "", {}))
     monkeypatch.setattr(gsc_api, "get_dashboard_data", lambda period_days=28: {"error": "falha simulada"})
 

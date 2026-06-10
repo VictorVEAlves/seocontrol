@@ -5722,8 +5722,7 @@ def url_detail():
     return page_shell("Detalhe URL", body)
 
 
-@app.route("/reports")
-def reports_list():
+def reports_list_legacy():
     if _is_authenticated():
         last = _load_last_audit()
         if last:
@@ -5818,6 +5817,293 @@ def reports_list():
   </div>
 </div>"""
     return page_shell("Relatórios", body)
+
+
+_REPORT_SUMMARY_LABELS = {
+    "gsc_queries": "Queries GSC",
+    "gsc_page_ctr_opportunities": "Páginas com CTR baixo",
+    "gsc_content_opportunities": "Oportunidades de conteúdo",
+    "onpage_pages": "Páginas on-page",
+    "duplicate_issues": "Duplicidades",
+    "broken_links": "Links quebrados",
+    "cluster_issues": "Clusters com alerta",
+    "pagespeed_results": "PageSpeed",
+    "sitemap_issues": "Problemas no sitemap",
+    "indexability_issues": "Problemas de indexação",
+    "snippet_issues": "Problemas de snippet",
+    "content_gaps": "Lacunas de conteúdo",
+    "product_issues": "Problemas de produto",
+    "link_suggestions": "Sugestões de links",
+    "recommendations": "Tarefas geradas",
+    "gsc_api_drops": "Quedas detectadas",
+    "gsc_api_critical_drops": "Quedas críticas",
+    "gsc_api_tag_suggestions": "Sugestões de tags",
+    "gsc_api_brands": "Marcas afetadas",
+    "gsc_api_pages_current": "Páginas no período atual",
+    "gsc_api_pages_previous": "Páginas no período anterior",
+    "gsc_api_period_current": "Período atual",
+    "gsc_api_period_previous": "Período anterior",
+    "gsc_api_comparison": "Comparação",
+    "gsc_api_error": "Erro GSC",
+    "blog_ideas": "Ideias de blog",
+    "keyword_tracker_alerts": "Alertas de posição",
+    "cannibalization_queries": "Queries canibalizadas",
+    "cannibalization_high": "Canibalizações críticas",
+}
+
+
+def _run_type_label(run_type: str) -> str:
+    run_type = str(run_type or "").strip()
+    labels = {
+        "all": "Auditoria Completa",
+        "audit": "Auditoria",
+        "full-audit": "Auditoria Completa",
+        "gsc-api": "Tendências GSC (API ao vivo)",
+        "gsc": "Análise GSC",
+        "blog-ideas": "Ideias de Blog",
+        "onpage": "Auditoria On-Page",
+        "broken-links": "Links Quebrados",
+        "keyword-tracker": "Rastreamento de Posições",
+        "cannibalization": "Canibalização de Keywords",
+        "schema-check": "Schema Markup",
+    }
+    if run_type in labels:
+        return labels[run_type]
+    for group in TOOL_GROUPS:
+        for tool in group.get("tools", []):
+            if tool.get("key") == run_type:
+                return str(tool.get("name") or run_type)
+    return run_type.replace("-", " ").title() if run_type else "Relatório"
+
+
+def _format_report_datetime(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "-"
+    return text.replace("T", " ").replace("+00:00", "")[:19]
+
+
+def _summary_value_is_empty(value) -> bool:
+    return value is None or value == "" or value == [] or value == {}
+
+
+def _run_summary_preview(summary: dict, limit: int = 3) -> str:
+    if not isinstance(summary, dict) or not summary:
+        return '<span style="color:var(--muted)">Sem resumo</span>'
+    preferred = [
+        "gsc_api_drops", "gsc_api_critical_drops", "gsc_api_tag_suggestions",
+        "blog_ideas", "onpage_pages", "broken_links", "duplicate_issues",
+        "recommendations", "gsc_queries",
+    ]
+    parts = []
+    for key in preferred + [k for k in summary.keys() if k not in preferred]:
+        value = summary.get(key)
+        if _summary_value_is_empty(value):
+            continue
+        label = _REPORT_SUMMARY_LABELS.get(key, key.replace("_", " "))
+        parts.append(f"{esc(label)}: <strong>{esc(value)}</strong>")
+        if len(parts) >= limit:
+            break
+    return " · ".join(parts) if parts else '<span style="color:var(--muted)">Sem resumo</span>'
+
+
+def _summary_cards(summary: dict) -> str:
+    if not isinstance(summary, dict) or not summary:
+        return '<p class="muted">Este run não possui resumo salvo.</p>'
+    cards = []
+    for key, value in summary.items():
+        if _summary_value_is_empty(value):
+            continue
+        label = _REPORT_SUMMARY_LABELS.get(key, key.replace("_", " ").title())
+        cards.append(f"""
+<div class="metric-card">
+  <div class="val" style="font-size:24px">{esc(value)}</div>
+  <div class="lbl">{esc(label)}</div>
+</div>""")
+    return f'<div class="metric-grid">{"".join(cards)}</div>' if cards else '<p class="muted">Este run não possui métricas relevantes no resumo.</p>'
+
+
+def _load_report_runs(site_id: str, limit: int = 50) -> list[dict]:
+    if not site_id:
+        return []
+    rows = (
+        get_supabase().table("crawl_runs")
+        .select("id, run_type, status, created_at, finished_at, summary, scope")
+        .eq("site_id", site_id)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute().data
+        or []
+    )
+    return rows if isinstance(rows, list) else []
+
+
+@app.route("/reports")
+def reports_list():
+    if not _is_authenticated():
+        return reports_list_legacy()
+
+    rows = []
+    last = _load_last_audit()
+    if last:
+        completed = esc(last.get("_completed_at") or "Última auditoria")
+        scope = esc((last.get("_audit_scope") or {}).get("source") or "Auditoria completa")
+        rows.append(f"""
+<tr>
+  <td style="white-space:nowrap;font-size:13px">{completed}</td>
+  <td style="font-size:13px">{scope}</td>
+  <td><span class="tag">Auditoria Completa</span></td>
+  <td style="font-size:12px;color:var(--ink-mid)">Último relatório privado da auditoria completa</td>
+  <td style="text-align:right"><a href="/full-audit/report/last" class="btn btn-sm">Ver</a></td>
+</tr>""")
+
+    try:
+        for run in _load_report_runs(_current_site_id()):
+            run_type = str(run.get("run_type") or "")
+            if last and run_type == "full-audit":
+                continue
+            run_id = esc(run.get("id"))
+            label = esc(_run_type_label(run_type))
+            created = esc(_format_report_datetime(run.get("created_at") or run.get("finished_at")))
+            status = esc(run.get("status") or "completed")
+            report_type = "Auditoria" if run_type in {"all", "audit", "full-audit"} else "Ferramenta"
+            rows.append(f"""
+<tr>
+  <td style="white-space:nowrap;font-size:13px">{created}</td>
+  <td style="font-size:13px">{esc(report_type)}</td>
+  <td><span class="tag">{label}</span></td>
+  <td style="font-size:12px;color:var(--ink-mid)">{_run_summary_preview(run.get("summary") or {})} <span class="tag" style="margin-left:6px">{status}</span></td>
+  <td style="text-align:right"><a href="/reports/run/{run_id}" class="btn btn-sm">Ver</a></td>
+</tr>""")
+    except Exception as exc:
+        rows.append(f"""
+<tr>
+  <td colspan="5" style="color:var(--bad);padding:18px">
+    Não foi possível carregar os relatórios salvos das ferramentas: {esc(exc)}
+  </td>
+</tr>""")
+
+    rows_html = "".join(rows) or '<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:32px">Nenhum relatório deste usuário/site ainda. Rode uma ferramenta em <a href="/tools">Ferramentas</a> ou uma auditoria em <a href="/full-audit?new=1">Auditoria Completa</a>.</td></tr>'
+    body = f"""
+<div class="section-head" style="margin-bottom:20px">
+  <h1>Relatórios</h1>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <a href="/tools" class="btn">Ferramentas</a>
+    <a href="/full-audit?new=1" class="btn btn-primary">+ Nova auditoria</a>
+  </div>
+</div>
+<div class="panel">
+  <p class="muted" style="font-size:13px;margin-bottom:14px">Relatórios salvos do site ativo. Ferramentas executadas com “salvar no banco” aparecem aqui junto da última auditoria completa.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Data/hora</th><th>Escopo</th><th>Módulo</th><th>Resumo</th><th style="text-align:right"></th></tr></thead>
+      <tbody>{rows_html}</tbody>
+    </table>
+  </div>
+</div>"""
+    return page_shell("Relatórios", body)
+
+
+@app.route("/reports/run/<run_id>")
+def report_run_detail(run_id: str):
+    if not _is_authenticated():
+        return redirect("/reports")
+
+    site_id = _current_site_id()
+    if not site_id:
+        return error_page("Nenhum site ativo selecionado."), 404
+
+    rows = (
+        get_supabase().table("crawl_runs")
+        .select("id, run_type, status, created_at, finished_at, summary, scope")
+        .eq("id", run_id)
+        .eq("site_id", site_id)
+        .limit(1)
+        .execute().data
+        or []
+    )
+    if not rows:
+        return error_page("Relatório não encontrado para o site ativo."), 404
+
+    run = rows[0]
+    summary = run.get("summary") if isinstance(run.get("summary"), dict) else {}
+    scope = run.get("scope") if isinstance(run.get("scope"), list) else []
+    issues = []
+    try:
+        issue_rows = (
+            get_supabase().table("issues")
+            .select("source, severity, issue_type, title, description, target")
+            .eq("run_id", run_id)
+            .eq("site_id", site_id)
+            .limit(500)
+            .execute().data
+            or []
+        )
+        issues = issue_rows if isinstance(issue_rows, list) else []
+    except Exception:
+        issues = []
+    scope_html = "".join(f"<li><code>{esc(item)}</code></li>" for item in scope[:30])
+    if len(scope) > 30:
+        scope_html += f"<li class='muted'>... mais {len(scope) - 30} itens</li>"
+    if not scope_html:
+        scope_html = '<li class="muted">Sem escopo específico.</li>'
+    issue_rows_html = "".join(
+        f"""
+<tr>
+  <td><span class="tag">{esc(issue.get("severity") or "-")}</span></td>
+  <td>{esc(issue.get("title") or issue.get("issue_type") or "-")}</td>
+  <td style="font-size:12px;color:var(--ink-mid)">{esc(issue.get("target") or "-")}</td>
+  <td style="font-size:12px;color:var(--ink-mid)">{esc(issue.get("description") or "")}</td>
+</tr>"""
+        for issue in issues
+    )
+    issues_html = f"""
+<div class="panel" style="margin-bottom:18px">
+  <h2>Achados salvos ({len(issues)})</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Severidade</th><th>Achado</th><th>Alvo</th><th>Detalhe</th></tr></thead>
+      <tbody>{issue_rows_html}</tbody>
+    </table>
+  </div>
+</div>""" if issue_rows_html else ""
+    technical_json = esc(_json_mod.dumps({
+        "id": run.get("id"),
+        "run_type": run.get("run_type"),
+        "status": run.get("status"),
+        "created_at": run.get("created_at"),
+        "finished_at": run.get("finished_at"),
+        "summary": summary,
+        "scope": scope,
+        "issues_count": len(issues),
+    }, ensure_ascii=False, indent=2, default=str))
+
+    label = esc(_run_type_label(run.get("run_type")))
+    body = f"""
+<div class="section-head" style="margin-bottom:20px">
+  <div>
+    <h1>{label}</h1>
+    <p class="muted" style="font-size:13px;margin-top:4px">Relatório salvo em {_format_report_datetime(run.get("created_at") or run.get("finished_at"))}</p>
+  </div>
+  <a href="/reports" class="btn">Voltar</a>
+</div>
+<div class="panel" style="margin-bottom:18px">
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
+    <span class="tag">{esc(run.get("status") or "completed")}</span>
+    <span class="tag">{esc(run.get("run_type") or "")}</span>
+  </div>
+  {_summary_cards(summary)}
+</div>
+<div class="panel" style="margin-bottom:18px">
+  <h2>Escopo</h2>
+  <ul style="margin:0;padding-left:18px;display:grid;gap:6px">{scope_html}</ul>
+</div>
+{issues_html}
+<div class="panel">
+  <h2>Detalhes técnicos</h2>
+  <pre style="white-space:pre-wrap;background:#070b10;color:#f8fafc;border-radius:10px;padding:16px;overflow:auto;font-size:12px;line-height:1.5">{technical_json}</pre>
+</div>"""
+    return page_shell(label, body)
 
 
 @app.route("/report")
@@ -6777,10 +7063,18 @@ def _select_deep_audit_pages(scope_key: str) -> tuple[list[str], dict]:
 
 def _scoreable_onpage_warnings(page: dict) -> list:
     """Warnings that remain relevant to the on-page SEO health score."""
-    return [
-        warning for warning in page.get("warnings", [])
-        if "meta keywords" not in str(warning).casefold()
-    ]
+    scoreable = []
+    for warning in page.get("warnings", []):
+        text = str(warning)
+        folded = text.casefold()
+        if "meta keywords" in folded:
+            continue
+        if "meta title longo" in folded:
+            match = re.search(r"\((\d+)\s*(?:chars?|caracteres?)", text, re.I)
+            if match and 30 <= int(match.group(1)) <= 70:
+                continue
+        scoreable.append(warning)
+    return scoreable
 
 
 def _health_score(results: dict) -> int:

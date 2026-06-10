@@ -2,6 +2,12 @@ from datetime import datetime, timedelta, timezone
 
 import app as dashboard
 from modules import supabase_store
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _local_auth_disabled(monkeypatch):
+    monkeypatch.setenv("AUTH_REQUIRED", "0")
 
 
 class _FakeQuery:

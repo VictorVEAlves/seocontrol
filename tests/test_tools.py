@@ -1,5 +1,11 @@
 import app as dashboard
 import json
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _local_auth_disabled(monkeypatch):
+    monkeypatch.setenv("AUTH_REQUIRED", "0")
 
 
 def test_ai_insights_tool_is_removed_from_standalone_tools():

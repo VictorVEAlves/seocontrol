@@ -5,7 +5,7 @@ from config import get_site_url as _get_site_url
 HTML_SIZE_WARN_KB = 500
 
 TITLE_MIN = 30
-TITLE_MAX = 65
+TITLE_MAX = 70
 DESC_MIN = 100
 DESC_MAX = 165
 

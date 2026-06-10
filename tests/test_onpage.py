@@ -85,6 +85,41 @@ def test_onpage_includes_fetch_error_details_when_request_fails(monkeypatch):
     assert "timed out" in result["issues"][0]
 
 
+def test_onpage_meta_title_accepts_30_to_70_characters(monkeypatch):
+    def audit_with_title(title):
+        html = f"""
+        <html>
+          <head>
+            <title>{title}</title>
+            <meta name="description" content="Descricao completa para manter a pagina dentro do tamanho minimo esperado pela auditoria on-page do sistema.">
+            <link rel="canonical" href="https://example.com/pagina">
+            <script type="application/ld+json">{{"@type":"ItemList"}}</script>
+          </head>
+          <body>
+            <h1>Pagina de teste</h1>
+            <h2>Secao de teste</h2>
+            <p>Conteudo suficientemente longo para que o teste foque somente no tamanho do meta title.</p>
+          </body>
+        </html>
+        """
+
+        def fake_get_page(url):
+            return 200, BeautifulSoup(html, "lxml"), {}, url
+
+        monkeypatch.setattr("modules.onpage.get_page", fake_get_page)
+        return onpage.audit_page("https://example.com/pagina")
+
+    title_warnings_30 = [w for w in audit_with_title("A" * 30)["warnings"] if "Meta title" in w]
+    title_warnings_70 = [w for w in audit_with_title("A" * 70)["warnings"] if "Meta title" in w]
+    title_warnings_29 = [w for w in audit_with_title("A" * 29)["warnings"] if "Meta title" in w]
+    title_warnings_71 = [w for w in audit_with_title("A" * 71)["warnings"] if "Meta title" in w]
+
+    assert title_warnings_30 == []
+    assert title_warnings_70 == []
+    assert any("curto" in warning for warning in title_warnings_29)
+    assert any("longo" in warning for warning in title_warnings_71)
+
+
 def test_audit_pages_reports_progress_without_orphan_inference(monkeypatch):
     def fake_audit_page(url, collect_internal_links=False):
         return {

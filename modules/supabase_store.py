@@ -291,7 +291,7 @@ def _create_run(sb: Client, site_id: str, run_type: str, scope: list, summary: d
 
 
 def _summary(results: dict) -> dict:
-    return {
+    summary = {
         "gsc_queries": len(results.get("gsc", {}).get("top_queries", [])),
         "gsc_page_ctr_opportunities": len(results.get("gsc", {}).get("low_ctr_pages", [])),
         "gsc_content_opportunities": len(results.get("gsc", {}).get("content_opps", [])),
@@ -311,6 +311,38 @@ def _summary(results: dict) -> dict:
         "link_suggestions": len(results.get("link_suggestions", {}).get("suggestions", [])),
         "recommendations": len(results.get("backlog", [])),
     }
+    gsc_api = results.get("gsc_api")
+    if isinstance(gsc_api, dict):
+        drops = gsc_api.get("drops") or []
+        tag_suggestions = gsc_api.get("tag_suggestions") or []
+        brand_summary = gsc_api.get("brand_summary") or {}
+        summary.update({
+            "gsc_api_drops": len(drops),
+            "gsc_api_critical_drops": len([
+                drop for drop in drops
+                if isinstance(drop, dict) and drop.get("severity") == "critical"
+            ]),
+            "gsc_api_tag_suggestions": len(tag_suggestions),
+            "gsc_api_brands": len(brand_summary),
+            "gsc_api_pages_current": gsc_api.get("total_pages_cur", 0),
+            "gsc_api_pages_previous": gsc_api.get("total_pages_prev", 0),
+            "gsc_api_period_current": gsc_api.get("period_current", ""),
+            "gsc_api_period_previous": gsc_api.get("period_previous", ""),
+            "gsc_api_comparison": gsc_api.get("comparison_label") or gsc_api.get("comparison", ""),
+        })
+        if gsc_api.get("error"):
+            summary["gsc_api_error"] = gsc_api.get("error")
+    if "blog_ideas" in results:
+        summary["blog_ideas"] = len(results.get("blog_ideas") or [])
+    if "keyword_tracker" in results:
+        tracker = results.get("keyword_tracker") or {}
+        summary["keyword_tracker_alerts"] = len(tracker.get("alerts", [])) if isinstance(tracker, dict) else 0
+    if "cannibalization" in results:
+        cannibalization = results.get("cannibalization") or {}
+        if isinstance(cannibalization, dict):
+            summary["cannibalization_queries"] = cannibalization.get("total", 0)
+            summary["cannibalization_high"] = cannibalization.get("high", 0)
+    return summary
 
 
 def _save_gsc(sb: Client, site_id: str, run_id: str, gsc: dict) -> None:
@@ -594,6 +626,35 @@ def _save_generic_module_issues(sb: Client, site_id: str, run_id: str, results: 
             "title": f"Gap de conteudo: {row.get('entity')}",
             "description": row.get("suggested_action"),
             "target": row.get("entity"),
+            "evidence": _clean(row),
+        })
+
+    for row in results.get("gsc_api", {}).get("drops", []):
+        if not isinstance(row, dict):
+            continue
+        target = row.get("page") or row.get("url") or row.get("target") or ""
+        url_id = _upsert_url(sb, site_id, target) if str(target).startswith(("http", "/")) else None
+        raw_severity = str(row.get("severity") or "").lower()
+        severity = "high" if raw_severity == "critical" else "medium" if raw_severity else "low"
+        impressions_delta = row.get("impressions_delta")
+        clicks_delta = row.get("clicks_delta")
+        description_parts = []
+        if impressions_delta is not None:
+            description_parts.append(f"Variação de impressões: {impressions_delta}")
+        if clicks_delta is not None:
+            description_parts.append(f"Variação de cliques: {clicks_delta}")
+        if row.get("brand"):
+            description_parts.append(f"Marca: {row.get('brand')}")
+        rows.append({
+            "run_id": run_id,
+            "site_id": site_id,
+            "url_id": url_id,
+            "source": "gsc_api",
+            "severity": severity,
+            "issue_type": "traffic_drop",
+            "title": "Queda de tráfego detectada",
+            "description": " · ".join(description_parts),
+            "target": str(target),
             "evidence": _clean(row),
         })
 

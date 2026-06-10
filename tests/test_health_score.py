@@ -2,6 +2,12 @@ import app as dashboard
 from app import _health_score, _scoreable_onpage_warnings
 import config
 from modules import sitemap_robots
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _local_auth_disabled(monkeypatch):
+    monkeypatch.setenv("AUTH_REQUIRED", "0")
 
 
 def _page(issues=None, warnings=None):
@@ -36,6 +42,22 @@ def test_health_score_uses_onpage_findings_and_ignores_legacy_meta_keywords():
     assert _health_score(healthy) == 100
     assert _health_score(with_seo_finding) == 95
     assert _scoreable_onpage_warnings(healthy["onpage"][0]) == []
+
+
+def test_scoreable_warnings_ignore_legacy_meta_title_long_until_70_chars():
+    page = _page(warnings=[
+        "Meta title longo (69 chars — cortado no Google)",
+        "Meta title longo (70 chars — cortado no Google)",
+        "Meta title longo (72 chars — cortado no Google)",
+        "Meta title curto (25 chars — mín 30)",
+    ])
+
+    warnings = _scoreable_onpage_warnings(page)
+
+    assert "Meta title longo (69 chars — cortado no Google)" not in warnings
+    assert "Meta title longo (70 chars — cortado no Google)" not in warnings
+    assert "Meta title longo (72 chars — cortado no Google)" in warnings
+    assert "Meta title curto (25 chars — mín 30)" in warnings
 
 
 def test_full_audit_report_counts_warnings_as_onpage_findings(monkeypatch):
