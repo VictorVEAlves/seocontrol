@@ -12,6 +12,14 @@ def test_shopify_page_renders_frontend(monkeypatch):
     assert "Shopify SEO" in html
     assert "/shopify/generate/start" in html
     assert "shopify-action-form" in html
+    assert "shopify-top-grid" in html
+    assert "shopify-process-grid" in html
+    assert "shopify-process-audit" in html
+    assert "shopify-process-generate" in html
+    assert "shopify-process-publish" in html
+    assert "Auditar loja" in html
+    assert "Gerar sugestoes com IA" in html
+    assert "Revisar e publicar" in html
     assert "/shopify/credentials" in html
     assert "shopify-workflow" in html
     assert "shopify-tab-audit" in html

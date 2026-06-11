@@ -38,6 +38,24 @@ def test_theme_uses_premium_palette():
     assert "--brand:       #080808" in css
     assert "--nav-bg:      #050505" in css
     assert ".nav a.active { background: #e7e2d7; color: #080808" in css
+    assert "body.nav-open .sidebar { transform: translateX(0); }" in css
+    assert ".mobile-topbar" in css
+    assert ".mobile-card-table" in css
+    assert "content: attr(data-label)" in css
+
+
+def test_page_shell_has_mobile_navigation_controls(monkeypatch):
+    monkeypatch.setattr(dashboard, "get_site_name", lambda: "Cliente Premium")
+    monkeypatch.setattr(dashboard, "_current_user_email", lambda: "cliente@example.com")
+
+    with dashboard.app.test_request_context("/full-audit/report/last"):
+        html = dashboard.page_shell("Teste", "<div class='health-summary-card'>Conteudo</div>")
+
+    assert 'class="mobile-topbar"' in html
+    assert 'onclick="toggleMobileNav()"' in html
+    assert 'onclick="closeMobileNav()"' in html
+    assert "document.body.classList.toggle('nav-open')" in html
+    assert 'href="/full-audit?new=1" aria-label="Nova auditoria"' in html
 
 
 def test_dashboard_frontend_has_error_timeout_helpers(monkeypatch):

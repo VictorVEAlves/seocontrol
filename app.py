@@ -725,16 +725,26 @@ def styles() -> str:
     }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html { font-size: 14px; }
+    html, body { width: 100%; max-width: 100%; }
     body {
       font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
       color: var(--ink);
       background: var(--canvas);
       line-height: 1.5;
       -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
     }
 
     /* ── Layout ── */
+    img, svg, canvas { max-width: 100%; }
     .layout { display: flex; min-height: 100vh; }
+    .mobile-topbar,
+    .mobile-backdrop { display: none; }
+    .main,
+    .content,
+    .panel,
+    .chart-panel,
+    .table-wrap { min-width: 0; }
     .sidebar {
       width: 232px;
       flex-shrink: 0;
@@ -842,7 +852,7 @@ def styles() -> str:
     }
     .topbar-title { font-size: 16px; font-weight: 700; color: var(--ink); }
     .topbar-sub { font-size: 12px; color: var(--muted); margin-top: 1px; }
-    .content { padding: 24px 28px 48px; max-width: 1380px; }
+    .content { padding: 24px 28px 48px; max-width: 1380px; width: 100%; }
 
     /* ── Typography ── */
     h1 { font-size: 22px; font-weight: 800; }
@@ -1267,12 +1277,213 @@ def styles() -> str:
       .sidebar { width: 210px; }
     }
     @media (max-width: 780px) {
-      .layout { flex-direction: column; }
-      .sidebar { width: 100%; height: auto; position: static; flex-direction: row; flex-wrap: wrap; }
+      html { font-size: 13.5px; }
+      body.nav-open { overflow: hidden; }
+      .mobile-topbar {
+        position: sticky;
+        left: 0;
+        right: 0;
+        top: 0;
+        z-index: 900;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        min-height: 58px;
+        padding: 10px 14px;
+        background:
+          radial-gradient(circle at 12% -18%, rgba(214,178,94,.22), transparent 32%),
+          linear-gradient(135deg, #0a0a0a, #020202);
+        border-bottom: 1px solid rgba(214,178,94,.22);
+        box-shadow: 0 10px 28px rgba(0,0,0,.22);
+      }
+      .mobile-menu-btn,
+      .mobile-audit-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 38px;
+        height: 38px;
+        border-radius: 10px;
+        border: 1px solid rgba(214,178,94,.34);
+        background: rgba(255,255,255,.06);
+        color: #fffaf0;
+        font-size: 18px;
+        font-weight: 900;
+        text-decoration: none;
+      }
+      .mobile-menu-btn:hover,
+      .mobile-audit-btn:hover {
+        text-decoration: none;
+        color: #fff;
+        background: rgba(255,255,255,.10);
+      }
+      .mobile-title { min-width: 0; flex: 1; }
+      .mobile-title strong {
+        display: block;
+        color: #fffaf0;
+        font-size: 14px;
+        line-height: 1.15;
+      }
+      .mobile-title span {
+        display: block;
+        color: #aaa59a;
+        font-size: 11px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        max-width: 220px;
+      }
+      .mobile-backdrop {
+        display: block;
+        position: fixed;
+        inset: 0;
+        z-index: 990;
+        background: rgba(0,0,0,.54);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity .18s ease;
+      }
+      body.nav-open .mobile-backdrop {
+        opacity: 1;
+        pointer-events: auto;
+      }
+      .layout { display: block; min-height: calc(100vh - 58px); }
+      .sidebar {
+        position: fixed;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        z-index: 1000;
+        width: min(86vw, 320px);
+        max-width: 320px;
+        height: 100dvh;
+        flex-direction: column;
+        flex-wrap: nowrap;
+        transform: translateX(-105%);
+        transition: transform .2s ease;
+        box-shadow: 24px 0 70px rgba(0,0,0,.42);
+      }
+      body.nav-open .sidebar { transform: translateX(0); }
+      .sidebar-brand { padding: 16px 16px 12px; }
+      .sidebar-brand .logo-sub { max-width: 190px !important; }
+      .nav-section { width: 100%; padding: 9px 10px 4px; }
+      .nav-section + .nav-section { margin-top: 4px; padding-top: 12px; }
+      .nav a { padding: 10px 12px; font-size: 14px; }
+      .sidebar-cta { width: auto; margin: 12px 14px 6px; }
+      .sidebar-cta a { justify-content: center; padding: 10px 12px; font-size: 13px; }
+      .sidebar-footer { margin-top: 12px; padding: 12px 14px 16px; }
+      .main { width: 100%; min-width: 0; }
       .tool-grid { grid-template-columns: 1fr; }
       .kpis { grid-template-columns: repeat(2, 1fr); }
       .kanban { grid-template-columns: 1fr; }
-      .content { padding: 16px; }
+      .content { padding: 18px 14px 36px; max-width: none; }
+      .panel { padding: 16px !important; }
+      .panel-head,
+      .section-head {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+      .section-head > .btn,
+      .section-head > button,
+      .panel-head > .btn,
+      .panel-head > button {
+        width: 100%;
+        justify-content: center;
+      }
+      .filters { flex-direction: column; align-items: stretch; }
+      .filters input,
+      .filters select,
+      .filters button { width: 100%; }
+      .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+      .metric-card { padding: 14px 13px; }
+      .metric-card .val { font-size: 24px; }
+      .health-summary-card {
+        flex-direction: column !important;
+        align-items: stretch !important;
+        gap: 18px !important;
+        padding: 20px !important;
+      }
+      .health-ring {
+        width: 116px;
+        height: 116px;
+        align-self: center;
+      }
+      .health-ring svg { width: 116px; height: 116px; }
+      .health-number { font-size: 28px; }
+      .output { min-height: 260px; max-height: 60vh; }
+      .table-wrap { max-width: 100%; }
+      table { font-size: 12px; }
+      th, td { padding: 9px 10px; }
+      .mobile-card-table {
+        min-width: 0 !important;
+        border-collapse: separate;
+        border-spacing: 0 10px;
+      }
+      .mobile-card-table thead { display: none; }
+      .mobile-card-table,
+      .mobile-card-table tbody,
+      .mobile-card-table tr,
+      .mobile-card-table td {
+        display: block;
+        width: 100%;
+      }
+      .mobile-card-table tr {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--panel);
+        overflow: hidden;
+        box-shadow: var(--shadow-sm);
+      }
+      .mobile-card-table td {
+        display: flex;
+        justify-content: space-between;
+        gap: 14px;
+        align-items: flex-start;
+        border-bottom: 1px solid var(--line-light);
+        text-align: right !important;
+        overflow-wrap: anywhere;
+      }
+      .mobile-card-table td:last-child { border-bottom: none; }
+      .mobile-card-table td::before {
+        content: attr(data-label);
+        flex: 0 0 42%;
+        max-width: 42%;
+        text-align: left;
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: .04em;
+      }
+      .mobile-card-table td[colspan] {
+        display: block;
+        text-align: center !important;
+      }
+      .mobile-card-table td[colspan]::before { display: none; }
+      .lane { min-height: 280px; }
+      .lane-cards { min-height: 180px; }
+      .toast {
+        left: 14px;
+        right: 14px;
+        bottom: 14px;
+        text-align: center;
+      }
+    }
+    @media (max-width: 480px) {
+      html { font-size: 13px; }
+      .content { padding: 14px 10px 30px; }
+      h1 { font-size: 20px; line-height: 1.2; }
+      h2 { font-size: 16px; }
+      .btn { width: 100%; justify-content: center; }
+      .kpis,
+      .metric-grid,
+      .insights-grid { grid-template-columns: 1fr; }
+      .kpi { padding: 15px 16px; }
+      .kpi-value { font-size: 28px; }
+      .mobile-title span { max-width: 170px; }
+      .rtab { padding: 9px 12px; }
+      .health-summary-card { border-radius: 12px !important; }
     }
   </style>"""
 
@@ -1324,6 +1535,15 @@ def page_shell(title: str, body: str, active: str = "") -> str:
   {styles()}
 </head>
 <body>
+<div class="mobile-topbar">
+  <button class="mobile-menu-btn" type="button" onclick="toggleMobileNav()" aria-label="Abrir menu">☰</button>
+  <div class="mobile-title">
+    <strong>SEO Control</strong>
+    <span title="{esc(_site_name)}">{esc(_site_name)}</span>
+  </div>
+  <a class="mobile-audit-btn" href="/full-audit?new=1" aria-label="Nova auditoria">+</a>
+</div>
+<div class="mobile-backdrop" onclick="closeMobileNav()" aria-hidden="true"></div>
 <div class="layout">
   <aside class="sidebar">
     <div class="sidebar-brand">
@@ -1380,6 +1600,18 @@ def page_shell(title: str, body: str, active: str = "") -> str:
 </div>
 <div id="toast" class="toast"></div>
 <script>
+  function toggleMobileNav() {{
+    document.body.classList.toggle('nav-open');
+  }}
+  function closeMobileNav() {{
+    document.body.classList.remove('nav-open');
+  }}
+  document.addEventListener('keydown', function(ev) {{
+    if (ev.key === 'Escape') closeMobileNav();
+  }});
+  document.addEventListener('click', function(ev) {{
+    if (window.innerWidth <= 780 && ev.target.closest('.sidebar a')) closeMobileNav();
+  }});
   function showToast(text, type) {{
     const t = document.getElementById('toast');
     t.textContent = text;
@@ -2228,7 +2460,7 @@ def pages_inventory():
   .pages-empty { padding:38px; text-align:center; color:var(--muted); }
   .pages-loading { padding:38px; text-align:center; color:var(--muted); }
   .pages-error { margin:12px 18px; padding:12px 14px; border:1px solid var(--bad); background:var(--bad-bg); color:var(--bad); border-radius:8px; display:none; font-weight:700; font-size:13px; }
-  @media(max-width:780px){ .pages-head{align-items:flex-start;flex-direction:column}.pages-search{width:100%}.pages-search input{width:100%} }
+  @media(max-width:780px){ .pages-head{align-items:flex-start;flex-direction:column}.pages-toolbar{align-items:stretch;flex-direction:column}.pages-search,.pages-search input,.pages-tab,.pages-select,.pages-toolbar .btn{width:100%}.pages-table-wrap{max-height:none}.pages-table{min-width:0!important}.url-cell{min-width:0;max-width:none}.url-link{font-size:12px} }
 </style>
 
 <div class="pages-shell">
@@ -2265,7 +2497,7 @@ def pages_inventory():
     </div>
     <div class="pages-error" id="pages-error"></div>
     <div class="pages-table-wrap">
-      <table class="pages-table">
+      <table class="pages-table mobile-card-table">
         <thead>
           <tr>
             <th data-field="source">Fonte</th>
@@ -2334,13 +2566,13 @@ def pages_inventory():
       const deltaCls = delta > 0 ? 'delta-pos' : delta < 0 ? 'delta-neg' : 'delta-zero';
       const deltaTxt = (delta > 0 ? '+' : '') + fmtCompact(delta) + (delta > 0 ? ' ↑' : delta < 0 ? ' ↓' : '');
       return `<tr>
-        <td><span class="source-pill">${esc(r.source || 'GSC')}</span></td>
-        <td class="url-cell"><a class="url-link" href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.url)}</a></td>
-        <td class="num" style="color:#0068d7;font-weight:700">${fmtCompact(r.traffic)}</td>
-        <td class="num ${deltaCls}">${deltaTxt}</td>
-        <td class="num">${Number(r.traffic_share || 0).toFixed(2).replace('.', ',')}</td>
-        <td class="num" style="color:#0068d7">${fmt(r.keywords)}</td>
-        <td style="color:#0068d7">${esc(r.top_keyword || '—')}</td>
+        <td data-label="Fonte"><span class="source-pill">${esc(r.source || 'GSC')}</span></td>
+        <td data-label="URL" class="url-cell"><a class="url-link" href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.url)}</a></td>
+        <td data-label="TrÃ¡fego" class="num" style="color:#0068d7;font-weight:700">${fmtCompact(r.traffic)}</td>
+        <td data-label="AlteraÃ§Ã£o" class="num ${deltaCls}">${deltaTxt}</td>
+        <td data-label="TrÃ¡fego %" class="num">${Number(r.traffic_share || 0).toFixed(2).replace('.', ',')}</td>
+        <td data-label="Palavras-chave" class="num" style="color:#0068d7">${fmt(r.keywords)}</td>
+        <td data-label="Principal palavra-chave" style="color:#0068d7">${esc(r.top_keyword || '—')}</td>
       </tr>`;
     }).join('');
   }
@@ -2529,7 +2761,7 @@ def analytics_page():
   @keyframes analyticsSpin { to { transform:rotate(360deg); } }
   @keyframes shimmer {0%{background-position:200% 0}100%{background-position:-200% 0}}
   @media(max-width:980px){ .analytics-kpis{grid-template-columns:repeat(2,1fr)} .analytics-grid{grid-template-columns:1fr} .seo-funnel-grid{grid-template-columns:repeat(2,1fr)} .seo-metric-row{grid-template-columns:repeat(2,1fr)} }
-  @media(max-width:620px){ .analytics-kpis{grid-template-columns:1fr} .seo-funnel-grid{grid-template-columns:1fr} .seo-metric-row{grid-template-columns:1fr} }
+  @media(max-width:620px){ .analytics-kpis{grid-template-columns:1fr} .seo-funnel-grid{grid-template-columns:1fr} .seo-metric-row{grid-template-columns:1fr} .analytics-header{align-items:flex-start;flex-direction:column}.analytics-periods{display:grid;grid-template-columns:1fr 1fr;width:100%}.analytics-channel-select{grid-column:1/-1;width:100%;min-width:0}.analytics-period,.analytics-periods .btn{width:100%;justify-content:center}.analytics-card{padding:15px 12px}.analytics-chart{height:245px;overflow:hidden}.analytics-table{min-width:0!important} }
 </style>
 
 <div class="analytics-header">
@@ -2610,22 +2842,22 @@ def analytics_page():
 <div class="analytics-grid">
   <div class="analytics-card">
     <h2>Canais que geram receita</h2>
-    <div class="analytics-table-wrap"><table class="analytics-table" data-table="channels"><thead><tr><th class="sortable" data-sort-key="channel">Canal</th><th class="num sortable" data-sort-key="revenue">Receita</th><th class="num sortable" data-sort-key="purchases">Compras</th><th class="num sortable" data-sort-key="sessions">Sessoes</th><th class="num sortable" data-sort-key="conversion_rate">Taxa</th></tr></thead><tbody id="analytics-channels"></tbody></table></div>
+    <div class="analytics-table-wrap"><table class="analytics-table mobile-card-table" data-table="channels"><thead><tr><th class="sortable" data-sort-key="channel">Canal</th><th class="num sortable" data-sort-key="revenue">Receita</th><th class="num sortable" data-sort-key="purchases">Compras</th><th class="num sortable" data-sort-key="sessions">Sessoes</th><th class="num sortable" data-sort-key="conversion_rate">Taxa</th></tr></thead><tbody id="analytics-channels"></tbody></table></div>
   </div>
   <div class="analytics-card">
     <h2>Produtos vendidos</h2>
-    <div class="analytics-table-wrap"><table class="analytics-table" data-table="products"><thead><tr><th class="sortable" data-sort-key="item">Produto</th><th class="num sortable" data-sort-key="revenue">Receita</th><th class="num sortable" data-sort-key="items">Itens</th></tr></thead><tbody id="analytics-products"></tbody></table></div>
+    <div class="analytics-table-wrap"><table class="analytics-table mobile-card-table" data-table="products"><thead><tr><th class="sortable" data-sort-key="item">Produto</th><th class="num sortable" data-sort-key="revenue">Receita</th><th class="num sortable" data-sort-key="items">Itens</th></tr></thead><tbody id="analytics-products"></tbody></table></div>
   </div>
 </div>
 
 <div class="analytics-card">
   <h2>Landing pages com receita</h2>
-  <div class="analytics-table-wrap"><table class="analytics-table" data-table="landings"><thead><tr><th class="sortable" data-sort-key="landing_page">Pagina de entrada</th><th class="num sortable" data-sort-key="revenue">Receita</th><th class="num sortable" data-sort-key="purchases">Compras</th><th class="num sortable" data-sort-key="sessions">Sessoes</th><th class="num sortable" data-sort-key="conversion_rate">Taxa</th></tr></thead><tbody id="analytics-landings"></tbody></table></div>
+  <div class="analytics-table-wrap"><table class="analytics-table mobile-card-table" data-table="landings"><thead><tr><th class="sortable" data-sort-key="landing_page">Pagina de entrada</th><th class="num sortable" data-sort-key="revenue">Receita</th><th class="num sortable" data-sort-key="purchases">Compras</th><th class="num sortable" data-sort-key="sessions">Sessoes</th><th class="num sortable" data-sort-key="conversion_rate">Taxa</th></tr></thead><tbody id="analytics-landings"></tbody></table></div>
 </div>
 
 <div class="analytics-card" style="margin-top:16px">
   <h2>Paginas SEO: busca ate venda</h2>
-  <div class="analytics-table-wrap"><table class="analytics-table" data-table="seoPages"><thead><tr><th class="sortable" data-sort-key="landing_page">Pagina</th><th class="num sortable" data-sort-key="impressions">Impressoes</th><th class="num sortable" data-sort-key="clicks">Cliques</th><th class="num sortable" data-sort-key="ctr">CTR</th><th class="num sortable" data-sort-key="sessions">Sessoes</th><th class="num sortable" data-sort-key="revenue">Receita</th><th class="num sortable" data-sort-key="purchases">Compras</th><th class="num sortable" data-sort-key="revenue_per_click">R$/clique</th></tr></thead><tbody id="analytics-seo-pages"></tbody></table></div>
+  <div class="analytics-table-wrap"><table class="analytics-table mobile-card-table" data-table="seoPages"><thead><tr><th class="sortable" data-sort-key="landing_page">Pagina</th><th class="num sortable" data-sort-key="impressions">Impressoes</th><th class="num sortable" data-sort-key="clicks">Cliques</th><th class="num sortable" data-sort-key="ctr">CTR</th><th class="num sortable" data-sort-key="sessions">Sessoes</th><th class="num sortable" data-sort-key="revenue">Receita</th><th class="num sortable" data-sort-key="purchases">Compras</th><th class="num sortable" data-sort-key="revenue_per_click">R$/clique</th></tr></thead><tbody id="analytics-seo-pages"></tbody></table></div>
 </div>
 </div>
 
@@ -2799,22 +3031,22 @@ def analytics_page():
       else if (c.pct) value = pct(value);
       else if (c.num) value = num.format(Math.round(Number(value || 0)));
       else value = esc(value || '—');
-      return '<td class="' + (c.cls || '') + '">' + value + '</td>';
+      return '<td data-label="' + esc(c.label || c.key) + '" class="' + (c.cls || '') + '">' + value + '</td>';
     }).join('') + '</tr>').join('');
   }
 
   function renderTables(data) {
     document.getElementById('analytics-channels').innerHTML = tableRows(data.channels, [
-      {key:'channel'}, {key:'revenue', money:true, cls:'num'}, {key:'purchases', num:true, cls:'num'}, {key:'sessions', num:true, cls:'num'}, {key:'conversion_rate', pct:true, cls:'num'}
+      {key:'channel', label:'Canal'}, {key:'revenue', label:'Receita', money:true, cls:'num'}, {key:'purchases', label:'Compras', num:true, cls:'num'}, {key:'sessions', label:'SessÃµes', num:true, cls:'num'}, {key:'conversion_rate', label:'Taxa', pct:true, cls:'num'}
     ], 'Sem canais com receita.', 'channels');
     document.getElementById('analytics-products').innerHTML = tableRows(data.products, [
-      {key:'item'}, {key:'revenue', money:true, cls:'num'}, {key:'items', num:true, cls:'num'}
+      {key:'item', label:'Produto'}, {key:'revenue', label:'Receita', money:true, cls:'num'}, {key:'items', label:'Itens', num:true, cls:'num'}
     ], 'Sem produtos no GA4 para o periodo.', 'products');
     document.getElementById('analytics-landings').innerHTML = tableRows(data.landing_pages, [
-      {key:'landing_page'}, {key:'revenue', money:true, cls:'num'}, {key:'purchases', num:true, cls:'num'}, {key:'sessions', num:true, cls:'num'}, {key:'conversion_rate', pct:true, cls:'num'}
+      {key:'landing_page', label:'PÃ¡gina'}, {key:'revenue', label:'Receita', money:true, cls:'num'}, {key:'purchases', label:'Compras', num:true, cls:'num'}, {key:'sessions', label:'SessÃµes', num:true, cls:'num'}, {key:'conversion_rate', label:'Taxa', pct:true, cls:'num'}
     ], 'Sem landing pages com receita.', 'landings');
     document.getElementById('analytics-seo-pages').innerHTML = tableRows(data.seo_landing_pages, [
-      {key:'landing_page'}, {key:'impressions', num:true, cls:'num'}, {key:'clicks', num:true, cls:'num'}, {key:'ctr', pct:true, cls:'num'}, {key:'sessions', num:true, cls:'num'}, {key:'revenue', money:true, cls:'num'}, {key:'purchases', num:true, cls:'num'}, {key:'revenue_per_click', money:true, cls:'num'}
+      {key:'landing_page', label:'PÃ¡gina'}, {key:'impressions', label:'ImpressÃµes', num:true, cls:'num'}, {key:'clicks', label:'Cliques', num:true, cls:'num'}, {key:'ctr', label:'CTR', pct:true, cls:'num'}, {key:'sessions', label:'SessÃµes', num:true, cls:'num'}, {key:'revenue', label:'Receita', money:true, cls:'num'}, {key:'purchases', label:'Compras', num:true, cls:'num'}, {key:'revenue_per_click', label:'R$/clique', money:true, cls:'num'}
     ], 'Sem paginas com dados cruzados de GSC e GA4 organico.', 'seoPages');
   }
 
@@ -2979,7 +3211,7 @@ def index():
   .kpi-prev   {{font-size:11px;color:var(--muted)}}
 
   .chart-panel {{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:18px 20px;margin-bottom:16px}}
-  .chart-wrap  {{position:relative;height:270px}}
+  .chart-wrap  {{position:relative;height:270px;width:100%;min-width:0;overflow:hidden}}
   .chart-error {{display:none;margin-top:10px;background:var(--bad-bg);border:1px solid #fecaca;color:var(--bad);border-radius:var(--radius-sm);padding:10px 12px;font-size:12px;font-weight:600}}
 
   .dash-two-col {{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px}}
@@ -3009,14 +3241,26 @@ def index():
   .perf-tbl td {{font-size:12px;vertical-align:middle}}
 
   @media(max-width:900px){{
+    .dashboard-head {{align-items:flex-start!important;flex-direction:column;gap:12px}}
+    .dashboard-controls {{width:100%;justify-content:space-between;gap:8px!important}}
+    .period-pills {{flex:1;display:grid;grid-template-columns:repeat(3,1fr);gap:6px}}
+    .period-pill {{padding:7px 8px;text-align:center;line-height:1.1}}
     .kpi-grid {{grid-template-columns:repeat(2,1fr)}}
     .dash-two-col {{grid-template-columns:1fr}}
   }}
+  @media(max-width:520px){{
+    .kpi-grid {{grid-template-columns:1fr}}
+    .kpi-card {{padding:15px 16px}}
+    .kpi-value {{font-size:28px}}
+    .chart-panel {{padding:14px 12px}}
+    .chart-wrap {{height:235px}}
+    .chart-legend {{width:100%;justify-content:space-between;gap:8px!important}}
+  }}
 </style>
 
-<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
+<div class="dashboard-head" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
   <h1 style="font-size:20px;font-weight:700;color:var(--ink);margin:0">Desempenho nos resultados da pesquisa</h1>
-  <div style="display:flex;align-items:center;gap:10px">
+  <div class="dashboard-controls" style="display:flex;align-items:center;gap:10px">
     <div class="period-pills">
       <button class="period-pill" data-days="7">7 dias</button>
       <button class="period-pill active" data-days="28">28 dias</button>
@@ -3056,7 +3300,7 @@ def index():
 <div class="chart-panel">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
     <div style="font-size:13px;font-weight:600;color:var(--ink)" id="chart-period">Carregando...</div>
-    <div style="display:flex;gap:16px;font-size:11px;color:var(--muted)">
+    <div class="chart-legend" style="display:flex;gap:16px;font-size:11px;color:var(--muted)">
       <span style="display:flex;align-items:center;gap:5px">
         <span style="width:14px;height:3px;background:#4285F4;border-radius:2px;display:inline-block"></span>Cliques
       </span>
@@ -3081,7 +3325,7 @@ def index():
   <div class="panel">
     <div class="panel-head" style="margin-bottom:10px"><h2>Top consultas</h2></div>
     <div class="table-wrap">
-      <table class="perf-tbl" id="tbl-queries-table">
+      <table class="perf-tbl mobile-card-table" id="tbl-queries-table">
         <thead id="thead-queries"><tr>
           <th data-field="query"       data-tbl="queries">Consulta <i class="sort-icon">⇅</i></th>
           <th data-field="clicks"      data-tbl="queries" style="text-align:right">Cliques <i class="sort-icon">⇅</i></th>
@@ -3096,7 +3340,7 @@ def index():
   <div class="panel">
     <div class="panel-head" style="margin-bottom:10px"><h2>Top páginas</h2></div>
     <div class="table-wrap">
-      <table class="perf-tbl" id="tbl-pages-table">
+      <table class="perf-tbl mobile-card-table" id="tbl-pages-table">
         <thead id="thead-pages"><tr>
           <th data-field="page"        data-tbl="pages">Página <i class="sort-icon">⇅</i></th>
           <th data-field="clicks"      data-tbl="pages" style="text-align:right">Cliques <i class="sort-icon">⇅</i></th>
@@ -3136,18 +3380,18 @@ def index():
 
   const _rowFn = {{
     queries: r => `<tr>
-      <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${{r.query}}</td>
-      <td style="text-align:right;font-variant-numeric:tabular-nums">${{r.clicks.toLocaleString('pt-BR')}}</td>
-      <td style="text-align:right;font-variant-numeric:tabular-nums">${{r.impressions.toLocaleString('pt-BR')}}</td>
-      <td style="text-align:right">${{r.ctr.toFixed(1)}}%</td>
-      <td style="text-align:right">${{r.position.toFixed(1)}}</td>
+      <td data-label="Consulta" style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${{r.query}}</td>
+      <td data-label="Cliques" style="text-align:right;font-variant-numeric:tabular-nums">${{r.clicks.toLocaleString('pt-BR')}}</td>
+      <td data-label="ImpressÃµes" style="text-align:right;font-variant-numeric:tabular-nums">${{r.impressions.toLocaleString('pt-BR')}}</td>
+      <td data-label="CTR" style="text-align:right">${{r.ctr.toFixed(1)}}%</td>
+      <td data-label="PosiÃ§Ã£o" style="text-align:right">${{r.position.toFixed(1)}}</td>
     </tr>`,
     pages: r => `<tr>
-      <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px">${{r.page}}</td>
-      <td style="text-align:right;font-variant-numeric:tabular-nums">${{r.clicks.toLocaleString('pt-BR')}}</td>
-      <td style="text-align:right;font-variant-numeric:tabular-nums">${{r.impressions.toLocaleString('pt-BR')}}</td>
-      <td style="text-align:right">${{r.ctr.toFixed(1)}}%</td>
-      <td style="text-align:right">${{r.position.toFixed(1)}}</td>
+      <td data-label="PÃ¡gina" style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px">${{r.page}}</td>
+      <td data-label="Cliques" style="text-align:right;font-variant-numeric:tabular-nums">${{r.clicks.toLocaleString('pt-BR')}}</td>
+      <td data-label="ImpressÃµes" style="text-align:right;font-variant-numeric:tabular-nums">${{r.impressions.toLocaleString('pt-BR')}}</td>
+      <td data-label="CTR" style="text-align:right">${{r.ctr.toFixed(1)}}%</td>
+      <td data-label="PosiÃ§Ã£o" style="text-align:right">${{r.position.toFixed(1)}}</td>
     </tr>`,
   }};
 
@@ -4840,33 +5084,43 @@ def shopify_page():
   </div>
 </div>
 
-<div class="shopify-overview">
-  <div class="shopify-overview-main">
+<div class="shopify-top-grid">
+  <section class="shopify-store-card">
     <span class="shopify-overview-label">Loja conectada</span>
     <strong>{esc(cfg['store_domain'] or 'Shopify pendente')}</strong>
     <span>{esc(cfg['public_base_url'] or 'Configure a URL pública da loja')}</span>
-  </div>
-  <div class="shopify-overview-step">
+  </section>
+  <section class="shopify-flow-cardlist" aria-label="Fluxo Shopify SEO">
+  <article class="shopify-flow-step is-current">
     <span>1</span>
     <strong>Auditar</strong>
     <small>Encontre metadados ausentes, curtos ou duplicados.</small>
-  </div>
-  <div class="shopify-overview-step">
+  </article>
+  <article class="shopify-flow-step">
     <span>2</span>
     <strong>Gerar</strong>
     <small>Crie sugestões com IA e envie para revisão.</small>
-  </div>
-  <div class="shopify-overview-step">
+  </article>
+  <article class="shopify-flow-step">
     <span>3</span>
     <strong>Publicar</strong>
     <small>Aplique somente itens aprovados.</small>
-  </div>
+  </article>
+  </section>
 </div>
 
-<div class="shopify-operation-grid">
-  <section class="panel shopify-panel">
+<form id="shopify-action-form" class="shopify-process-grid">
+  <section class="panel shopify-process-card" id="shopify-process-audit">
     <div class="panel-head"><h2 class="panel-title">Operação</h2></div>
-    <form id="shopify-action-form">
+    <div class="shopify-process-head">
+      <span class="shopify-process-number">1</span>
+      <div>
+        <span class="shopify-process-kicker">Primeiro passo</span>
+        <h2 class="panel-title">Auditar a loja</h2>
+        <p class="shopify-process-copy">Escolha o que o sistema deve ler na Shopify. Esta etapa nao usa IA e nao altera nada na loja.</p>
+      </div>
+    </div>
+    <div class="shopify-fields-grid">
       <div class="field">
         <label>Recurso</label>
         <select name="resource">
@@ -4880,27 +5134,63 @@ def shopify_page():
         <input name="limit" type="number" min="1" max="500" value="20">
       </div>
       <div class="field">
-        <label>Provedor</label>
-        <select name="provider">{provider_options}</select>
-      </div>
-      <div class="field">
         <label>Filtro Shopify</label>
         <input name="query" value="" placeholder="status:active">
       </div>
-      <div class="field">
-        <label>URLs</label>
+      <div class="field field-wide">
+        <label>URLs especificas</label>
         <input name="urls" value="" placeholder="/products/produto /collections/categoria">
       </div>
-      <label class="check-label" style="margin-bottom:10px">
-        <input type="checkbox" name="force"> Gerar para itens sem alerta
-      </label>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-        <button class="btn shopify-audit-action" id="shopify-audit-btn" type="button" onclick="runShopifyAudit()">Auditar</button>
-        <button class="btn btn-primary" id="shopify-generate-btn" type="button" onclick="startShopifyGenerate()">Gerar sugestões</button>
+      <div class="shopify-action-row">
+        <button class="btn shopify-audit-action" id="shopify-audit-btn" type="button" onclick="runShopifyAudit()">Auditar loja</button>
+        <span>Resultado aparece na aba <strong>Auditoria</strong>, com prioridades e problemas encontrados.</span>
       </div>
-    </form>
+    </div>
   </section>
-</div>
+
+  <section class="panel shopify-process-card" id="shopify-process-generate">
+    <div class="shopify-process-head">
+      <span class="shopify-process-number">2</span>
+      <div>
+        <span class="shopify-process-kicker">Depois da auditoria</span>
+        <h2 class="panel-title">Gerar sugestoes com IA</h2>
+        <p class="shopify-process-copy">Crie sugestoes para title, meta description e descricao. Elas ficam em revisao antes de publicar.</p>
+      </div>
+    </div>
+    <div class="shopify-fields-grid compact">
+      <div class="field">
+        <label>Provedor de IA</label>
+        <select name="provider">{provider_options}</select>
+      </div>
+      <label class="check-label shopify-check-panel">
+        <input type="checkbox" name="force">
+        <span>
+          <strong>Gerar tambem para itens sem alerta</strong>
+          <small>Use isso quando quiser renovar textos mesmo sem problema detectado.</small>
+        </span>
+      </label>
+    </div>
+    <div class="shopify-action-row">
+        <button class="btn btn-primary" id="shopify-generate-btn" type="button" onclick="startShopifyGenerate()">Gerar sugestões</button>
+      <span>As sugestoes entram na aba <strong>Sugestoes</strong> para voce revisar.</span>
+    </div>
+  </section>
+
+  <section class="panel shopify-process-card" id="shopify-process-publish">
+    <div class="shopify-process-head">
+      <span class="shopify-process-number">3</span>
+      <div>
+        <span class="shopify-process-kicker">Etapa final</span>
+        <h2 class="panel-title">Revisar e publicar</h2>
+        <p class="shopify-process-copy">Nada e enviado para a Shopify automaticamente. Selecione os itens, aprove e publique apenas os aprovados.</p>
+      </div>
+    </div>
+    <div class="shopify-review-actions">
+      <button class="btn btn-ghost" type="button" onclick="setShopifyTab('queue')">Abrir revisao</button>
+      <button class="btn btn-primary" type="button" onclick="setShopifyTab('publish')">Ir para publicacao</button>
+    </div>
+  </section>
+</form>
 
 <section class="panel shopify-workflow" style="margin-top:20px">
   <div class="workflow-head">
@@ -5024,6 +5314,42 @@ def shopify_page():
 .shopify-audit-action{{background:#fff;color:var(--brand);border:1px solid var(--brand);font-weight:800;justify-content:center}}
 .shopify-audit-action:hover{{background:var(--brand-light);color:var(--brand);text-decoration:none}}
 .shopify-audit-action:disabled{{opacity:.6;cursor:not-allowed}}
+.shopify-top-grid{{display:grid;grid-template-columns:minmax(260px,.9fr) minmax(520px,1.8fr);gap:12px;margin-bottom:18px}}
+.shopify-store-card,.shopify-flow-cardlist{{border:1px solid var(--line);border-radius:10px;background:#fff;padding:14px 16px;box-shadow:var(--shadow-sm)}}
+.shopify-store-card strong{{display:block;font-size:18px;color:var(--ink);margin-bottom:3px}}
+.shopify-store-card span:last-child{{font-size:12px;color:var(--muted);word-break:break-word}}
+.shopify-flow-cardlist{{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}}
+.shopify-flow-step{{display:grid;grid-template-columns:34px 1fr;column-gap:10px;align-items:start;border:1px solid var(--line-light);border-radius:10px;background:#f8fafc;padding:12px}}
+.shopify-flow-step span,.shopify-process-number{{width:30px;height:30px;border-radius:999px;background:var(--brand-light);color:var(--brand);display:flex;align-items:center;justify-content:center;font-weight:900;border:1px solid var(--brand-mid);flex:none}}
+.shopify-flow-step > span{{grid-row:1/3}}
+.shopify-flow-step.is-current span{{background:#050505;color:#fff;border-color:#050505}}
+.shopify-flow-step strong{{display:block;font-size:13px;color:var(--ink);margin-bottom:4px}}
+.shopify-flow-step small{{display:block;font-size:11px;color:var(--muted);line-height:1.35}}
+#shopify-action-form.shopify-process-grid{{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:stretch;margin-bottom:20px}}
+.shopify-process-card{{padding:20px!important;min-height:100%;border-left:4px solid var(--brand-mid)}}
+.shopify-process-card > .panel-head{{display:none}}
+#shopify-process-audit{{grid-column:1/-1;border-left-color:#050505}}
+#shopify-process-generate{{border-left-color:var(--brand)}}
+#shopify-process-publish{{border-left-color:#d7a84c}}
+.shopify-process-head{{display:flex;gap:12px;align-items:flex-start;margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid var(--line-light)}}
+.shopify-process-kicker{{display:block;font-size:10px;line-height:1.2;text-transform:uppercase;letter-spacing:.08em;font-weight:900;color:var(--muted);margin-bottom:4px}}
+.shopify-process-copy{{margin:5px 0 0;color:var(--muted);font-size:13px;line-height:1.45}}
+.shopify-fields-grid{{display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:0 14px;align-items:end}}
+.shopify-fields-grid.compact{{grid-template-columns:minmax(220px,.8fr) minmax(260px,1.2fr);align-items:stretch}}
+.shopify-fields-grid .field{{margin-bottom:12px}}
+.shopify-fields-grid .field-wide{{grid-column:span 2}}
+.shopify-fields-grid label,.shopify-process-card label{{font-size:11px;font-weight:800;color:#334155;text-transform:uppercase;letter-spacing:.04em}}
+.shopify-fields-grid input,.shopify-fields-grid select{{min-height:38px}}
+.shopify-fields-grid .shopify-action-row{{grid-column:1/-1}}
+.shopify-action-row{{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:2px}}
+.shopify-action-row .btn{{min-height:40px;min-width:210px;justify-content:center}}
+.shopify-action-row span{{font-size:12px;color:var(--muted);line-height:1.4}}
+.shopify-check-panel{{display:flex;gap:10px;align-items:flex-start;margin:0 0 12px!important;border:1px solid var(--line-light);border-radius:10px;background:#f8fafc;padding:12px!important;text-transform:none!important;letter-spacing:0!important;color:var(--ink)!important}}
+.shopify-check-panel input{{margin-top:3px}}
+.shopify-check-panel strong{{display:block;font-size:13px;color:var(--ink);margin-bottom:3px;text-transform:none}}
+.shopify-check-panel small{{display:block;font-size:12px;color:var(--muted);line-height:1.35;text-transform:none}}
+.shopify-review-actions{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:4px}}
+.shopify-review-actions .btn{{justify-content:center;min-height:40px}}
 .shopify-empty{{padding:18px;text-align:center;color:var(--muted);border:1px dashed var(--line);border-radius:8px}}
 .shopify-diff{{font-size:12px;line-height:1.45;color:var(--muted);max-width:none;white-space:normal;overflow-wrap:anywhere}}
 .shopify-diff strong{{display:block;color:var(--ink);font-size:13px;margin-bottom:4px}}
@@ -5095,9 +5421,9 @@ def shopify_page():
 .shopify-danger-action:disabled{{opacity:.45;cursor:not-allowed}}
 .shopify-row-actions{{display:flex;gap:6px;align-items:center;justify-content:flex-start}}
 .technical-output{{min-height:180px;max-height:360px;overflow:auto}}
-@media(max-width:1180px){{.shopify-overview{{grid-template-columns:1fr 1fr}}.shopify-operation-grid{{grid-template-columns:1fr}}#shopify-action-form{{grid-template-columns:1fr 1fr}}}}
+@media(max-width:1180px){{.shopify-top-grid{{grid-template-columns:1fr}}.shopify-flow-cardlist{{grid-template-columns:repeat(3,1fr)}}#shopify-action-form.shopify-process-grid{{grid-template-columns:1fr}}.shopify-fields-grid{{grid-template-columns:1fr 1fr}}}}
 @media(max-width:980px){{.audit-card{{grid-template-columns:1fr}}.audit-summary-grid,.workflow-timeline,.publish-stats{{grid-template-columns:repeat(2,1fr)}}.publish-grid{{grid-template-columns:1fr}}}}
-@media(max-width:680px){{.shopify-overview,#shopify-action-form,.workflow-timeline,.publish-stats{{grid-template-columns:1fr}}#shopify-action-form .field:nth-of-type(5),#shopify-action-form > label,#shopify-action-form > div:last-child{{grid-column:auto}}.workflow-head,.workflow-meta{{flex-direction:column;align-items:flex-start}}}}
+@media(max-width:680px){{.shopify-top-grid,.shopify-flow-cardlist,#shopify-action-form.shopify-process-grid,.shopify-fields-grid,.shopify-fields-grid.compact,.shopify-review-actions,.workflow-timeline,.publish-stats{{grid-template-columns:1fr}}.shopify-fields-grid .field-wide{{grid-column:auto}}.shopify-action-row .btn{{width:100%;min-width:0}}.workflow-head,.workflow-meta{{flex-direction:column;align-items:flex-start}}}}
 </style>
 
 <script>
@@ -5138,7 +5464,7 @@ function setAuditBusy(isBusy) {{
   const btn = document.getElementById('shopify-audit-btn');
   if (!btn) return;
   btn.disabled = !!isBusy;
-  btn.textContent = isBusy ? 'Auditando...' : 'Auditar';
+  btn.textContent = isBusy ? 'Auditando...' : 'Auditar loja';
 }}
 function setShopifyTab(name) {{
   document.querySelectorAll('.shopify-tab').forEach(function(btn) {{
@@ -8598,7 +8924,7 @@ def full_audit_report(job_id):
     bm    = gsc.get("benchmarks", {})
 
     health_html = f"""
-<div style="display:flex;align-items:center;gap:28px;margin-bottom:28px;background:var(--panel);
+<div class="health-summary-card" style="display:flex;align-items:center;gap:28px;margin-bottom:28px;background:var(--panel);
      border:1px solid var(--line);border-radius:var(--radius-lg);padding:28px 32px;box-shadow:var(--shadow-sm)">
   <div class="health-ring">
     <svg width="130" height="130" viewBox="0 0 130 130">
