@@ -9,7 +9,7 @@ import sys
 import threading
 import uuid
 from collections import OrderedDict
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
@@ -2263,7 +2263,7 @@ def logout():
     return redirect(url_for("login"))
 
 
-def _clear_dashboard_cache_for_active_site(periods: tuple[int, ...] = (7, 28, 90)) -> None:
+def _clear_dashboard_cache_for_active_site(periods: tuple[int | str, ...] = (7, 28, 90)) -> None:
     try:
         from modules.gsc_api import _dashboard_cache_file
         for period in periods:
@@ -2273,6 +2273,32 @@ def _clear_dashboard_cache_for_active_site(periods: tuple[int, ...] = (7, 28, 90
                     cache_file.unlink()
     except Exception:
         pass
+
+
+def _dashboard_request_range() -> tuple[int, str, str, str]:
+    start_raw = str(request.args.get("start_date") or "").strip()
+    end_raw = str(request.args.get("end_date") or "").strip()
+    if bool(start_raw) != bool(end_raw):
+        return 0, "", "", "Informe a data inicial e a data final."
+    if start_raw and end_raw:
+        try:
+            start = date.fromisoformat(start_raw)
+            end = date.fromisoformat(end_raw)
+        except ValueError:
+            return 0, "", "", "Use datas validas no formato AAAA-MM-DD."
+        if start > end:
+            return 0, "", "", "A data inicial deve ser anterior a data final."
+        if end > date.today() - timedelta(days=1):
+            return 0, "", "", "A data final nao pode ser posterior a ontem."
+        period = (end - start).days + 1
+        if period > 500:
+            return 0, "", "", "Selecione um intervalo de no maximo 500 dias."
+        return period, str(start), str(end), ""
+    try:
+        period = max(1, min(365, int(request.args.get("period", 28))))
+    except (ValueError, TypeError):
+        period = 28
+    return period, "", "", ""
 
 
 def _persist_dashboard_refreshed_gsc_token(initial_token_json: str = "") -> None:
@@ -2294,15 +2320,18 @@ def dashboard_data():
     if not ready:
         return jsonify({"error": message, "setup_required": True}), 400
     initial_token_json = str((_cfg or {}).get("gsc_token_json") or "")
-    try:
-        period = max(7, min(90, int(request.args.get("period", 28))))
-    except (ValueError, TypeError):
-        period = 28
+    period, start_date, end_date, range_error = _dashboard_request_range()
+    if range_error:
+        return jsonify({"error": range_error}), 400
+    cache_key = f"{start_date}_{end_date}" if start_date and end_date else period
     if request.args.get("force") == "1":
-        _clear_dashboard_cache_for_active_site((period,))
+        _clear_dashboard_cache_for_active_site((cache_key,))
     try:
         from modules.gsc_api import get_dashboard_data
-        data = get_dashboard_data(period_days=period)
+        if start_date and end_date:
+            data = get_dashboard_data(period_days=period, start_date=start_date, end_date=end_date)
+        else:
+            data = get_dashboard_data(period_days=period)
         _persist_dashboard_refreshed_gsc_token(initial_token_json)
         status = 503 if isinstance(data, dict) and data.get("error") else 200
         return jsonify(data), status
@@ -2317,15 +2346,18 @@ def dashboard_ai():
     if not ready:
         return jsonify({"ai_summary": "", "ai_error": message, "setup_required": True}), 400
     initial_token_json = str((_cfg or {}).get("gsc_token_json") or "")
-    try:
-        period = max(7, min(90, int(request.args.get("period", 28))))
-    except (ValueError, TypeError):
-        period = 28
+    period, start_date, end_date, range_error = _dashboard_request_range()
+    if range_error:
+        return jsonify({"ai_summary": "", "ai_error": range_error}), 400
+    cache_key = f"{start_date}_{end_date}" if start_date and end_date else period
     if request.args.get("force") == "1":
-        _clear_dashboard_cache_for_active_site((period,))
+        _clear_dashboard_cache_for_active_site((cache_key,))
     try:
         from modules.gsc_api import get_dashboard_ai
-        data = get_dashboard_ai(period_days=period)
+        if start_date and end_date:
+            data = get_dashboard_ai(period_days=period, start_date=start_date, end_date=end_date)
+        else:
+            data = get_dashboard_ai(period_days=period)
         _persist_dashboard_refreshed_gsc_token(initial_token_json)
         return jsonify(data)
     except Exception as exc:
@@ -2656,6 +2688,32 @@ def analytics_data():
     try:
         from modules.ga4_api import get_analytics_data
         data = get_analytics_data(period_days=period, force=request.args.get("force") == "1", channel=channel)
+        _persist_dashboard_refreshed_gsc_token(initial_token_json)
+        status = 503 if isinstance(data, dict) and data.get("error") else 200
+        return jsonify(data), status
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/dashboard/revenue")
+def dashboard_revenue():
+    ready, message, cfg = _analytics_setup_status()
+    if not ready:
+        return jsonify({"error": message, "setup_required": True}), 400
+    initial_token_json = str((cfg or {}).get("gsc_token_json") or "")
+    period, start_date, end_date, range_error = _dashboard_request_range()
+    if range_error:
+        return jsonify({"error": range_error}), 400
+    try:
+        from modules.ga4_api import get_revenue_summary
+        kwargs = {
+            "period_days": period,
+            "force": request.args.get("force") == "1",
+            "channel": "organic",
+        }
+        if start_date and end_date:
+            kwargs.update(start_date=start_date, end_date=end_date)
+        data = get_revenue_summary(**kwargs)
         _persist_dashboard_refreshed_gsc_token(initial_token_json)
         status = 503 if isinstance(data, dict) and data.get("error") else 200
         return jsonify(data), status
@@ -3195,6 +3253,38 @@ def index():
   }}
   .period-pill:hover {{background:var(--line-light)}}
   .period-pill.active {{background:var(--brand);color:#fff;border-color:var(--brand)}}
+  .date-filter {{position:relative}}
+  .date-filter-toggle {{
+    min-width:116px;padding:6px 11px;border:1px solid var(--line);border-radius:16px;
+    background:var(--surface);color:var(--ink-mid);font-size:12px;font-weight:700;
+    cursor:pointer;white-space:nowrap;
+  }}
+  .date-filter-toggle:hover,.date-filter-toggle.active {{border-color:var(--ink);color:var(--ink)}}
+  .date-filter-menu {{
+    display:none;position:absolute;right:0;top:calc(100% + 8px);z-index:30;width:390px;
+    background:var(--surface);border:1px solid var(--line);border-radius:12px;
+    box-shadow:0 18px 45px rgba(0,0,0,.16);overflow:hidden;
+  }}
+  .date-filter.open .date-filter-menu {{display:grid;grid-template-columns:165px 1fr}}
+  .date-presets {{padding:8px;border-right:1px solid var(--line);background:var(--line-light)}}
+  .date-preset {{
+    width:100%;border:0;background:transparent;color:var(--ink-mid);text-align:left;
+    padding:8px 10px;border-radius:7px;font-size:12px;cursor:pointer;
+  }}
+  .date-preset:hover,.date-preset.active {{background:var(--surface);color:var(--ink);font-weight:700}}
+  .custom-date-panel {{padding:15px}}
+  .custom-date-panel strong {{display:block;font-size:13px;margin-bottom:12px}}
+  .custom-date-fields {{display:grid;grid-template-columns:1fr;gap:10px}}
+  .custom-date-fields label {{
+    display:grid;gap:5px;color:var(--muted);font-size:10px;font-weight:700;
+    text-transform:uppercase;letter-spacing:.4px;
+  }}
+  .custom-date-fields input {{
+    width:100%;border:1px solid var(--line);border-radius:7px;background:var(--surface);
+    color:var(--ink);padding:8px;font:inherit;font-size:12px;
+  }}
+  .custom-date-actions {{display:flex;justify-content:flex-end;gap:7px;margin-top:14px}}
+  .date-filter-error {{display:none;color:var(--bad);font-size:11px;margin-top:8px}}
 
   .kpi-grid {{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}}
   .kpi-card {{
@@ -3210,6 +3300,30 @@ def index():
   .delta-flat {{background:var(--line-light);color:var(--muted)}}
   .kpi-prev   {{font-size:11px;color:var(--muted)}}
 
+  .revenue-summary {{
+    background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+    padding:18px 20px;margin-bottom:16px;
+  }}
+  .revenue-summary-head {{
+    display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:14px;
+  }}
+  .revenue-eyebrow {{
+    color:var(--accent-dark);font-size:10px;font-weight:800;text-transform:uppercase;
+    letter-spacing:.8px;margin-bottom:4px;
+  }}
+  .revenue-summary h2 {{font-size:16px;color:var(--ink);margin:0 0 3px}}
+  .revenue-summary p {{font-size:12px;color:var(--muted);margin:0}}
+  .revenue-kpi-grid {{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}}
+  .revenue-kpi-card {{
+    background:var(--line-light);border:1px solid var(--line);border-radius:var(--radius-sm);
+    padding:14px 16px;min-width:0;
+  }}
+  .revenue-kpi-card .kpi-value {{font-size:25px}}
+  .revenue-error {{
+    display:none;margin-top:12px;padding:9px 11px;border-radius:var(--radius-sm);
+    background:var(--line-light);color:var(--muted);font-size:12px;
+  }}
+
   .chart-panel {{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:18px 20px;margin-bottom:16px}}
   .chart-wrap  {{position:relative;height:270px;width:100%;min-width:0;overflow:hidden}}
   .chart-error {{display:none;margin-top:10px;background:var(--bad-bg);border:1px solid #fecaca;color:var(--bad);border-radius:var(--radius-sm);padding:10px 12px;font-size:12px;font-weight:600}}
@@ -3224,10 +3338,19 @@ def index():
   @keyframes shimmer {{0%{{background-position:200% 0}}100%{{background-position:-200% 0}}}}
   @keyframes spin {{to{{transform:rotate(360deg)}}}}
   #dash-refresh.spinning {{animation:spin .9s linear infinite;opacity:.7}}
-  .period-pill:disabled,.period-pill[disabled] {{opacity:.45;pointer-events:none}}
+  .period-pill:disabled,.period-pill[disabled],
+  .date-filter-toggle:disabled {{opacity:.45;pointer-events:none}}
 
   .gemini-dash {{background:#faf5ff;border:1px solid #e9d5ff;border-radius:var(--radius);padding:16px 20px;margin-bottom:16px}}
   .gemini-dash-head {{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;color:#7c3aed;text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px}}
+  .gemini-revenue {{
+    display:none;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px;
+    padding-bottom:14px;border-bottom:1px solid #e9d5ff;
+  }}
+  .gemini-revenue-item {{background:rgba(255,255,255,.72);border:1px solid #e9d5ff;border-radius:9px;padding:10px 12px}}
+  .gemini-revenue-label {{font-size:9px;font-weight:800;color:#7c3aed;text-transform:uppercase;letter-spacing:.45px;margin-bottom:4px}}
+  .gemini-revenue-value {{font-size:17px;font-weight:800;color:var(--ink)}}
+  .gemini-revenue-delta {{font-size:10px;color:var(--muted);margin-top:3px}}
   #gemini-dash-text strong {{color:var(--ink);font-weight:700}}
   #gemini-dash-text p {{margin:3px 0;color:var(--ink-mid);font-size:13px;line-height:1.65}}
   #gemini-dash-text ul {{margin:5px 0 5px 18px;padding:0;list-style:disc}}
@@ -3245,16 +3368,24 @@ def index():
     .dashboard-controls {{width:100%;justify-content:space-between;gap:8px!important}}
     .period-pills {{flex:1;display:grid;grid-template-columns:repeat(3,1fr);gap:6px}}
     .period-pill {{padding:7px 8px;text-align:center;line-height:1.1}}
+    .date-filter-menu {{position:fixed;left:12px;right:12px;top:92px;width:auto;max-height:calc(100vh - 110px);overflow:auto}}
     .kpi-grid {{grid-template-columns:repeat(2,1fr)}}
+    .revenue-kpi-grid {{grid-template-columns:repeat(3,1fr)}}
     .dash-two-col {{grid-template-columns:1fr}}
   }}
   @media(max-width:520px){{
     .kpi-grid {{grid-template-columns:1fr}}
+    .revenue-summary {{padding:15px 14px}}
+    .revenue-summary-head {{align-items:flex-start}}
+    .revenue-kpi-grid {{grid-template-columns:1fr}}
     .kpi-card {{padding:15px 16px}}
     .kpi-value {{font-size:28px}}
     .chart-panel {{padding:14px 12px}}
     .chart-wrap {{height:235px}}
     .chart-legend {{width:100%;justify-content:space-between;gap:8px!important}}
+    .date-filter.open .date-filter-menu {{grid-template-columns:1fr}}
+    .date-presets {{border-right:0;border-bottom:1px solid var(--line);display:grid;grid-template-columns:1fr 1fr}}
+    .gemini-revenue {{grid-template-columns:1fr}}
   }}
 </style>
 
@@ -3262,9 +3393,39 @@ def index():
   <h1 style="font-size:20px;font-weight:700;color:var(--ink);margin:0">Desempenho nos resultados da pesquisa</h1>
   <div class="dashboard-controls" style="display:flex;align-items:center;gap:10px">
     <div class="period-pills">
-      <button class="period-pill" data-days="7">7 dias</button>
-      <button class="period-pill active" data-days="28">28 dias</button>
-      <button class="period-pill" data-days="90">3 meses</button>
+      <button class="period-pill" data-preset="last_7">7 dias</button>
+      <button class="period-pill active" data-preset="last_28">28 dias</button>
+      <button class="period-pill" data-preset="last_90">3 meses</button>
+    </div>
+    <div class="date-filter" id="date-filter">
+      <button class="date-filter-toggle" id="date-filter-toggle" type="button" aria-expanded="false">
+        <span id="date-filter-label">Mais períodos</span> &#9662;
+      </button>
+      <div class="date-filter-menu" id="date-filter-menu">
+        <div class="date-presets">
+          <button class="date-preset" data-preset="yesterday">Ontem</button>
+          <button class="date-preset" data-preset="this_week">Esta semana</button>
+          <button class="date-preset" data-preset="last_week">Semana passada</button>
+          <button class="date-preset" data-preset="last_14">Últimos 14 dias</button>
+          <button class="date-preset" data-preset="last_30">Últimos 30 dias</button>
+          <button class="date-preset" data-preset="this_month">Este mês</button>
+          <button class="date-preset" data-preset="last_month">Último mês</button>
+          <button class="date-preset" data-preset="year_to_date">Este ano até hoje</button>
+          <button class="date-preset" data-preset="custom">Personalizado</button>
+        </div>
+        <div class="custom-date-panel">
+          <strong>Intervalo personalizado</strong>
+          <div class="custom-date-fields">
+            <label>Data inicial<input type="date" id="custom-start"></label>
+            <label>Data final<input type="date" id="custom-end"></label>
+          </div>
+          <div class="date-filter-error" id="date-filter-error"></div>
+          <div class="custom-date-actions">
+            <button class="btn btn-ghost btn-sm" type="button" id="date-filter-cancel">Cancelar</button>
+            <button class="btn btn-primary btn-sm" type="button" id="date-filter-apply">Aplicar</button>
+          </div>
+        </div>
+      </div>
     </div>
     <button class="btn btn-ghost btn-sm" id="dash-refresh" title="Forçar atualização" style="padding:5px 10px">↻</button>
   </div>
@@ -3297,6 +3458,38 @@ def index():
   </div>
 </div>
 
+<section class="revenue-summary" aria-labelledby="revenue-title">
+  <div class="revenue-summary-head">
+    <div>
+      <div class="revenue-eyebrow">Resultado de SEO</div>
+      <h2 id="revenue-title">Faturamento no período</h2>
+      <p id="revenue-period">Receita atribuída às sessões orgânicas no Google Analytics 4.</p>
+    </div>
+    <a href="/analytics" class="btn btn-ghost btn-sm">Ver Analytics</a>
+  </div>
+  <div class="revenue-kpi-grid">
+    <div class="revenue-kpi-card">
+      <div class="kpi-label">Faturamento orgânico</div>
+      <div class="kpi-value" id="rv-revenue"><span class="sk" style="width:120px;height:24px">&nbsp;</span></div>
+      <div class="kpi-delta-wrap" id="rd-revenue"></div>
+      <div class="kpi-prev" id="rp-revenue">&nbsp;</div>
+    </div>
+    <div class="revenue-kpi-card">
+      <div class="kpi-label">Compras orgânicas</div>
+      <div class="kpi-value" id="rv-purchases"><span class="sk" style="width:70px;height:24px">&nbsp;</span></div>
+      <div class="kpi-delta-wrap" id="rd-purchases"></div>
+      <div class="kpi-prev" id="rp-purchases">&nbsp;</div>
+    </div>
+    <div class="revenue-kpi-card">
+      <div class="kpi-label">Ticket médio orgânico</div>
+      <div class="kpi-value" id="rv-avg_purchase_revenue"><span class="sk" style="width:100px;height:24px">&nbsp;</span></div>
+      <div class="kpi-delta-wrap" id="rd-avg_purchase_revenue"></div>
+      <div class="kpi-prev" id="rp-avg_purchase_revenue">&nbsp;</div>
+    </div>
+  </div>
+  <div class="revenue-error" id="revenue-error"></div>
+</section>
+
 <div class="chart-panel">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
     <div style="font-size:13px;font-weight:600;color:var(--ink)" id="chart-period">Carregando...</div>
@@ -3315,6 +3508,7 @@ def index():
 
 <div class="gemini-dash" id="gemini-dash">
   <div class="gemini-dash-head">&#10024; Análise Gemini</div>
+  <div class="gemini-revenue" id="gemini-revenue"></div>
   <div id="gemini-dash-text" style="font-size:13px;line-height:1.65;color:var(--ink-mid)">
     <span class="sk" style="width:100%;height:14px;display:block;margin-bottom:6px">&nbsp;</span>
     <span class="sk" style="width:75%;height:14px;display:block">&nbsp;</span>
@@ -3371,12 +3565,111 @@ def index():
 <script>
 (function() {{
   let _chart = null;
-  let _activeDays = 28;
+  let _activeRange = null;
+  let _activePreset = 'last_28';
   let _data = {{ queries: [], pages: [] }};
   let _sort = {{
     queries: {{ col: 'clicks', dir: -1 }},
     pages:   {{ col: 'clicks', dir: -1 }},
   }};
+  const _brl = new Intl.NumberFormat('pt-BR', {{ style: 'currency', currency: 'BRL' }});
+
+  function pad2(value) {{
+    return String(value).padStart(2, '0');
+  }}
+
+  function isoDate(value) {{
+    return value.getFullYear() + '-' + pad2(value.getMonth()+1) + '-' + pad2(value.getDate());
+  }}
+
+  function parseDate(value) {{
+    const [year, month, day] = value.split('-').map(Number);
+    return new Date(year, month-1, day);
+  }}
+
+  function shiftDate(value, days) {{
+    const date = new Date(value);
+    date.setDate(date.getDate() + days);
+    return date;
+  }}
+
+  function rangeDays(range) {{
+    return Math.round((parseDate(range.end) - parseDate(range.start)) / 86400000) + 1;
+  }}
+
+  function presetRange(preset) {{
+    const today = new Date();
+    today.setHours(0,0,0,0);
+    const yesterday = shiftDate(today, -1);
+    const lastDays = days => ({{
+      start: isoDate(shiftDate(yesterday, -(days-1))),
+      end: isoDate(yesterday),
+    }});
+    if (preset === 'yesterday') return lastDays(1);
+    if (preset === 'last_7') return lastDays(7);
+    if (preset === 'last_14') return lastDays(14);
+    if (preset === 'last_28') return lastDays(28);
+    if (preset === 'last_30') return lastDays(30);
+    if (preset === 'last_90') return lastDays(90);
+    if (preset === 'this_week') {{
+      const start = shiftDate(yesterday, -yesterday.getDay());
+      return {{ start: isoDate(start), end: isoDate(yesterday) }};
+    }}
+    if (preset === 'last_week') {{
+      const thisWeekStart = shiftDate(yesterday, -yesterday.getDay());
+      return {{
+        start: isoDate(shiftDate(thisWeekStart, -7)),
+        end: isoDate(shiftDate(thisWeekStart, -1)),
+      }};
+    }}
+    if (preset === 'this_month') {{
+      return {{
+        start: isoDate(new Date(yesterday.getFullYear(), yesterday.getMonth(), 1)),
+        end: isoDate(yesterday),
+      }};
+    }}
+    if (preset === 'last_month') {{
+      return {{
+        start: isoDate(new Date(yesterday.getFullYear(), yesterday.getMonth()-1, 1)),
+        end: isoDate(new Date(yesterday.getFullYear(), yesterday.getMonth(), 0)),
+      }};
+    }}
+    if (preset === 'year_to_date') {{
+      return {{
+        start: isoDate(new Date(yesterday.getFullYear(), 0, 1)),
+        end: isoDate(yesterday),
+      }};
+    }}
+    return lastDays(28);
+  }}
+
+  function formatRange(range) {{
+    const fmt = value => parseDate(value).toLocaleDateString('pt-BR');
+    return fmt(range.start) + ' - ' + fmt(range.end);
+  }}
+
+  function rangeQuery(range, force) {{
+    return '?period=' + rangeDays(range) +
+      '&start_date=' + encodeURIComponent(range.start) +
+      '&end_date=' + encodeURIComponent(range.end) +
+      (force ? '&force=1' : '');
+  }}
+
+  function closeDateFilter() {{
+    document.getElementById('date-filter').classList.remove('open');
+    document.getElementById('date-filter-toggle').setAttribute('aria-expanded', 'false');
+  }}
+
+  function updateDateControls() {{
+    document.querySelectorAll('[data-preset]').forEach(button =>
+      button.classList.toggle('active', button.dataset.preset === _activePreset));
+    const quickPreset = ['last_7','last_28','last_90'].includes(_activePreset);
+    const label = document.getElementById('date-filter-label');
+    label.textContent = quickPreset ? 'Mais períodos' : formatRange(_activeRange);
+    document.getElementById('date-filter-toggle').classList.toggle('active', !quickPreset);
+    document.getElementById('custom-start').value = _activeRange.start;
+    document.getElementById('custom-end').value = _activeRange.end;
+  }}
 
   const _rowFn = {{
     queries: r => `<tr>
@@ -3467,6 +3760,49 @@ def index():
     }});
   }}
 
+  function setRevenueLoading() {{
+    const widths = {{ revenue: 120, purchases: 70, avg_purchase_revenue: 100 }};
+    Object.keys(widths).forEach(k => {{
+      document.getElementById('rv-'+k).innerHTML =
+        '<span class="sk" style="width:'+widths[k]+'px;height:24px">&nbsp;</span>';
+      document.getElementById('rd-'+k).innerHTML = '';
+      document.getElementById('rp-'+k).textContent = '';
+    }});
+    const error = document.getElementById('revenue-error');
+    error.style.display = 'none';
+    error.textContent = '';
+  }}
+
+  function setRevenueKPIs(data) {{
+    const kpis = data.kpis || {{}};
+    const cfg = [
+      ['revenue', v => _brl.format(v || 0)],
+      ['purchases', v => Math.round(v || 0).toLocaleString('pt-BR')],
+      ['avg_purchase_revenue', v => _brl.format(v || 0)],
+    ];
+    cfg.forEach(([k, fmt]) => {{
+      const info = kpis[k] || {{}};
+      document.getElementById('rv-'+k).textContent = fmt(info.value);
+      document.getElementById('rd-'+k).innerHTML = renderDelta(info.delta, false);
+      document.getElementById('rp-'+k).textContent =
+        info.prev != null ? 'Anterior: '+fmt(info.prev) : '';
+    }});
+    document.getElementById('revenue-period').textContent =
+      (data.period ? data.period + ' · ' : '') +
+      'Receita atribuída às sessões orgânicas no Google Analytics 4.';
+  }}
+
+  function showRevenueError(msg) {{
+    ['revenue','purchases','avg_purchase_revenue'].forEach(k => {{
+      document.getElementById('rv-'+k).textContent = '—';
+      document.getElementById('rd-'+k).innerHTML = '';
+      document.getElementById('rp-'+k).textContent = '';
+    }});
+    const error = document.getElementById('revenue-error');
+    error.style.display = 'block';
+    error.textContent = msg;
+  }}
+
   function buildChart(series) {{
     const labels = series.map(r => fmtDate(r.date));
     const clicks = series.map(r => r.clicks);
@@ -3522,8 +3858,10 @@ def index():
   function setLoading(on) {{
     const btn   = document.getElementById('dash-refresh');
     const pills = document.querySelectorAll('.period-pill');
+    const dateToggle = document.getElementById('date-filter-toggle');
     btn.classList.toggle('spinning', on);
     btn.disabled = on;
+    dateToggle.disabled = on;
     pills.forEach(b => {{ b.disabled = on; }});
     if (on) {{
       document.getElementById('gemini-dash-text').innerHTML =
@@ -3561,14 +3899,37 @@ def index():
     el.innerHTML = html;
   }}
 
+  function renderAIRevenue(data) {{
+    const el = document.getElementById('gemini-revenue');
+    if (!data || data.revenue === undefined) {{
+      el.style.display = 'none';
+      el.innerHTML = '';
+      return;
+    }}
+    const delta = value => value === null || value === undefined
+      ? 'Sem comparação'
+      : (value > 0 ? '▲ ' : (value < 0 ? '▼ ' : '— ')) + Math.abs(value).toFixed(1) + '% vs anterior';
+    el.innerHTML = [
+      ['Faturamento orgânico', _brl.format(data.revenue || 0), delta(data.revenue_delta)],
+      ['Compras orgânicas', Number(data.purchases || 0).toLocaleString('pt-BR'), delta(data.purchases_delta)],
+      ['Ticket médio', _brl.format(data.ticket || 0), delta(data.ticket_delta)],
+    ].map(item => '<div class="gemini-revenue-item">' +
+      '<div class="gemini-revenue-label">'+item[0]+'</div>' +
+      '<div class="gemini-revenue-value">'+item[1]+'</div>' +
+      '<div class="gemini-revenue-delta">'+item[2]+'</div>' +
+      '</div>').join('');
+    el.style.display = 'grid';
+  }}
+
   function skAI() {{
+    renderAIRevenue(null);
     document.getElementById('gemini-dash-text').innerHTML =
       '<span class="sk" style="width:100%;height:13px;display:block;margin-bottom:7px">&nbsp;</span>' +
       '<span class="sk" style="width:88%;height:13px;display:block;margin-bottom:7px">&nbsp;</span>' +
       '<span class="sk" style="width:72%;height:13px;display:block">&nbsp;</span>';
   }}
 
-  async function fetchJsonWithTimeout(url, timeoutMs) {{
+  async function fetchJsonWithTimeout(url, timeoutMs, timeoutMessage) {{
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {{
@@ -3582,7 +3943,7 @@ def index():
       return data;
     }} catch(e) {{
       if (e.name === 'AbortError') {{
-        return {{ error: 'Tempo esgotado ao buscar dados do Google Search Console. Tente atualizar em alguns segundos.' }};
+        return {{ error: timeoutMessage || 'Tempo esgotado ao buscar dados do Google Search Console. Tente atualizar em alguns segundos.' }};
       }}
       return {{ error: e.message || 'Falha ao buscar dados.' }};
     }} finally {{
@@ -3590,10 +3951,28 @@ def index():
     }}
   }}
 
-  async function loadAI(days, force) {{
+  async function loadRevenue(range, force) {{
+    setRevenueLoading();
+    const data = await fetchJsonWithTimeout(
+      '/dashboard/revenue'+rangeQuery(range, force),
+      18000,
+      'Tempo esgotado ao buscar o faturamento no Google Analytics 4.'
+    );
+    if (data.error) {{
+      const message = data.setup_required
+        ? 'Selecione uma propriedade GA4 nas Configurações para exibir o faturamento.'
+        : 'Faturamento indisponível: ' + data.error;
+      showRevenueError(message);
+      return;
+    }}
+    setRevenueKPIs(data);
+  }}
+
+  async function loadAI(range, force) {{
     skAI();
     try {{
-      const d = await fetchJsonWithTimeout('/dashboard/ai?period='+days+(force?'&force=1':''), 18000);
+      const d = await fetchJsonWithTimeout('/dashboard/ai'+rangeQuery(range, force), 18000);
+      renderAIRevenue(d.revenue_highlights || null);
       renderAI(d.ai_summary || (d.ai_error ? '⚠ '+d.ai_error : (d.error ? '⚠ '+d.error : '')));
     }} catch(e) {{
       renderAI('⚠ Erro Gemini: '+e.message);
@@ -3620,12 +3999,13 @@ def index():
     document.getElementById('gemini-dash-text').textContent = '⚠ ' + msg;
   }}
 
-  async function load(days, force) {{
-    _activeDays = days;
-    document.querySelectorAll('.period-pill').forEach(b =>
-      b.classList.toggle('active', +b.dataset.days === days));
+  async function load(range, force) {{
+    _activeRange = range;
+    updateDateControls();
     setLoading(true);
     skAI();
+    const revenuePromise = loadRevenue(range, force)
+      .catch(e => showRevenueError('Erro ao carregar faturamento: '+e.message));
     const chartError = document.getElementById('chart-error');
     if (chartError) {{
       chartError.style.display = 'none';
@@ -3633,7 +4013,7 @@ def index():
     }}
     let gscOk = false;
     try {{
-      const data = await fetchJsonWithTimeout('/dashboard/data?period='+days+(force?'&force=1':''), 22000);
+      const data = await fetchJsonWithTimeout('/dashboard/data'+rangeQuery(range, force), 22000);
       if (data.error) {{
         showError('GSC indisponível: ' + data.error);
         return;
@@ -3652,15 +4032,79 @@ def index():
       setLoading(false);
     }}
     // Gemini runs independently — only if GSC data loaded
-    if (gscOk) loadAI(days, force);
+    if (gscOk) {{
+      await revenuePromise;
+      loadAI(range, force);
+    }}
   }}
 
-  document.querySelectorAll('.period-pill').forEach(b =>
-    b.addEventListener('click', () => load(+b.dataset.days)));
-  document.getElementById('dash-refresh').addEventListener('click',
-    () => load(_activeDays, true));
+  function applyPreset(preset) {{
+    _activePreset = preset;
+    closeDateFilter();
+    load(presetRange(preset));
+  }}
 
-  load(28);
+  document.querySelectorAll('.period-pill').forEach(button =>
+    button.addEventListener('click', () => applyPreset(button.dataset.preset)));
+  document.querySelectorAll('.date-preset').forEach(button => {{
+    button.addEventListener('click', () => {{
+      if (button.dataset.preset === 'custom') {{
+        _activePreset = 'custom';
+        updateDateControls();
+        document.getElementById('custom-start').focus();
+        return;
+      }}
+      applyPreset(button.dataset.preset);
+    }});
+  }});
+  document.getElementById('date-filter-toggle').addEventListener('click', event => {{
+    event.stopPropagation();
+    const filter = document.getElementById('date-filter');
+    const open = filter.classList.toggle('open');
+    event.currentTarget.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }});
+  document.getElementById('date-filter-menu').addEventListener('click', event => event.stopPropagation());
+  document.getElementById('date-filter-cancel').addEventListener('click', closeDateFilter);
+  document.getElementById('date-filter-apply').addEventListener('click', () => {{
+    const start = document.getElementById('custom-start').value;
+    const end = document.getElementById('custom-end').value;
+    const error = document.getElementById('date-filter-error');
+    error.style.display = 'none';
+    if (!start || !end) {{
+      error.textContent = 'Informe as duas datas.';
+      error.style.display = 'block';
+      return;
+    }}
+    const days = Math.round((parseDate(end) - parseDate(start)) / 86400000) + 1;
+    const yesterday = shiftDate(new Date(new Date().setHours(0,0,0,0)), -1);
+    if (days < 1) {{
+      error.textContent = 'A data inicial deve ser anterior à data final.';
+      error.style.display = 'block';
+      return;
+    }}
+    if (parseDate(end) > yesterday) {{
+      error.textContent = 'A data final não pode ser posterior a ontem.';
+      error.style.display = 'block';
+      return;
+    }}
+    if (days > 500) {{
+      error.textContent = 'Selecione no máximo 500 dias.';
+      error.style.display = 'block';
+      return;
+    }}
+    _activePreset = 'custom';
+    closeDateFilter();
+    load({{ start, end }});
+  }});
+  document.addEventListener('click', closeDateFilter);
+  document.getElementById('dash-refresh').addEventListener('click',
+    () => load(_activeRange, true));
+
+  _activeRange = presetRange('last_28');
+  const maxCustomDate = isoDate(shiftDate(new Date(new Date().setHours(0,0,0,0)), -1));
+  document.getElementById('custom-start').max = maxCustomDate;
+  document.getElementById('custom-end').max = maxCustomDate;
+  load(_activeRange);
 }})();
 </script>"""
     return page_shell("Dashboard", body)

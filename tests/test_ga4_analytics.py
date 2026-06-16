@@ -65,6 +65,102 @@ def test_analytics_data_error_returns_service_status(monkeypatch):
     assert response.get_json()["error"] == "ga4 down"
 
 
+def test_revenue_summary_uses_organic_filter_and_previous_period(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(ga4_api, "get_ga4_property", lambda: "properties/123")
+    monkeypatch.setattr(
+        ga4_api,
+        "_cache_file",
+        lambda kind, period_days, property_id, channel=None: tmp_path / "revenue.json",
+    )
+
+    def fake_run_report(
+        property_id,
+        start_date,
+        end_date,
+        metrics,
+        dimensions=None,
+        limit=100,
+        dimension_filter=None,
+        timeout=18,
+    ):
+        calls.append(dimension_filter)
+        values = ["1000", "10", "100"] if len(calls) == 1 else ["800", "5", "90"]
+        return {"rows": [{"metricValues": [{"value": value} for value in values]}]}
+
+    monkeypatch.setattr(ga4_api, "_run_report", fake_run_report)
+
+    data = ga4_api.get_revenue_summary(period_days=28, force=True, channel="organic")
+
+    assert data["kpis"]["revenue"] == {"value": 1000.0, "prev": 800.0, "delta": 25.0}
+    assert data["kpis"]["purchases"]["value"] == 10.0
+    assert data["kpis"]["avg_purchase_revenue"]["value"] == 100.0
+    assert calls[0]["filter"]["fieldName"] == "sessionSourceMedium"
+    assert calls[0]["filter"]["stringFilter"]["value"] == "/ organic"
+
+
+def test_dashboard_revenue_uses_lightweight_organic_summary(monkeypatch):
+    calls = {}
+    monkeypatch.setattr(
+        dashboard,
+        "_analytics_setup_status",
+        lambda: (True, "", {"gsc_token_json": '{"token":"ok"}'}),
+    )
+    monkeypatch.setattr(dashboard, "_persist_dashboard_refreshed_gsc_token", lambda initial="": None)
+
+    def fake_summary(period_days=28, force=False, channel=None):
+        calls.update(period_days=period_days, force=force, channel=channel)
+        return {"kpis": {"revenue": {"value": 500, "prev": 400, "delta": 25}}}
+
+    monkeypatch.setattr(ga4_api, "get_revenue_summary", fake_summary)
+
+    response = dashboard.app.test_client().get("/dashboard/revenue?period=7&force=1")
+
+    assert response.status_code == 200
+    assert response.get_json()["kpis"]["revenue"]["value"] == 500
+    assert calls == {"period_days": 7, "force": True, "channel": "organic"}
+
+
+def test_dashboard_revenue_accepts_custom_date_range(monkeypatch):
+    calls = {}
+    monkeypatch.setattr(
+        dashboard,
+        "_analytics_setup_status",
+        lambda: (True, "", {"gsc_token_json": '{"token":"ok"}'}),
+    )
+    monkeypatch.setattr(dashboard, "_persist_dashboard_refreshed_gsc_token", lambda initial="": None)
+
+    def fake_summary(**kwargs):
+        calls.update(kwargs)
+        return {"period": "2026-06-01 -> 2026-06-10", "kpis": {}}
+
+    monkeypatch.setattr(ga4_api, "get_revenue_summary", fake_summary)
+
+    response = dashboard.app.test_client().get(
+        "/dashboard/revenue?start_date=2026-06-01&end_date=2026-06-10"
+    )
+
+    assert response.status_code == 200
+    assert calls["period_days"] == 10
+    assert calls["start_date"] == "2026-06-01"
+    assert calls["end_date"] == "2026-06-10"
+    assert calls["channel"] == "organic"
+
+
+def test_custom_period_builds_equal_previous_period():
+    current_start, current_end, previous_start, previous_end, days = ga4_api._resolved_periods(
+        28,
+        start_date="2026-06-01",
+        end_date="2026-06-10",
+    )
+
+    assert str(current_start) == "2026-06-01"
+    assert str(current_end) == "2026-06-10"
+    assert str(previous_start) == "2026-05-22"
+    assert str(previous_end) == "2026-05-31"
+    assert days == 10
+
+
 def test_ga4_funnel_rates_are_calculated():
     payload = {
         "rows": [

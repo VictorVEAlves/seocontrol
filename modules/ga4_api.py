@@ -327,7 +327,7 @@ def _same_values(left: list[str], right: list[str]) -> bool:
     return sorted(left) == sorted(right)
 
 
-def _cache_file(kind: str, period_days: int, property_id: str, channel: str | None = None) -> Path:
+def _cache_file(kind: str, period_days: int | str, property_id: str, channel: str | None = None) -> Path:
     raw_key = "|".join([
         "ga4-filter-v2",
         get_site_owner_user_id() or "local",
@@ -441,6 +441,27 @@ def _periods(period_days: int) -> tuple[date, date, date, date]:
     prev_end = cur_start - timedelta(days=1)
     prev_start = prev_end - timedelta(days=period_days - 1)
     return cur_start, cur_end, prev_start, prev_end
+
+
+def _resolved_periods(
+    period_days: int,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> tuple[date, date, date, date, int]:
+    if start_date and end_date:
+        cur_start = date.fromisoformat(str(start_date))
+        cur_end = date.fromisoformat(str(end_date))
+        if cur_start > cur_end:
+            raise ValueError("A data inicial deve ser anterior a data final.")
+        days = (cur_end - cur_start).days + 1
+        if days > 500:
+            raise ValueError("O intervalo do dashboard deve ter no maximo 500 dias.")
+        prev_end = cur_start - timedelta(days=1)
+        prev_start = prev_end - timedelta(days=days - 1)
+        return cur_start, cur_end, prev_start, prev_end, days
+    days = max(1, min(500, int(period_days or 28)))
+    cur_start, cur_end, prev_start, prev_end = _periods(days)
+    return cur_start, cur_end, prev_start, prev_end, days
 
 
 def _event_filter(events: list[str]) -> dict:
@@ -680,6 +701,107 @@ def _build_seo_landing_pages(gsc_pages: list[dict], organic_landings: list[dict]
         })
     rows.sort(key=lambda item: (float(item.get("revenue") or 0), int(item.get("clicks") or 0)), reverse=True)
     return rows[:50]
+
+
+def get_revenue_summary(
+    period_days: int = 28,
+    property_id: str | None = None,
+    force: bool = False,
+    channel: str | None = "organic",
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> dict:
+    """Fetch only the GA4 revenue KPIs needed by the main dashboard."""
+    prop = normalize_property(property_id or get_ga4_property())
+    if not prop:
+        return {"error": "Selecione a propriedade do Google Analytics 4 nas Configuracoes."}
+
+    try:
+        cur_start, cur_end, prev_start, prev_end, period_days = _resolved_periods(
+            period_days,
+            start_date,
+            end_date,
+        )
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    channel = channel or "organic"
+    cache_key = f"{cur_start}_{cur_end}" if start_date and end_date else period_days
+    cache_file = _cache_file("revenue_summary", cache_key, prop, channel)
+    if not force:
+        try:
+            if cache_file.exists():
+                cached = json.loads(cache_file.read_text(encoding="utf-8"))
+                if time.time() - float(cached.get("_cached_at", 0)) < 3600:
+                    return cached
+        except Exception:
+            pass
+
+    metrics = ["totalRevenue", "ecommercePurchases", "sessions"]
+    channel_filter = _channel_dimension_filter(channel)
+    try:
+        current = _summary_from_report(
+            _run_report(
+                prop,
+                str(cur_start),
+                str(cur_end),
+                metrics,
+                limit=1,
+                dimension_filter=channel_filter,
+            ),
+            metrics,
+        )
+        previous = _summary_from_report(
+            _run_report(
+                prop,
+                str(prev_start),
+                str(prev_end),
+                metrics,
+                limit=1,
+                dimension_filter=channel_filter,
+            ),
+            metrics,
+        )
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    revenue = float(current.get("totalRevenue") or 0)
+    purchases = int(current.get("ecommercePurchases") or 0)
+    sessions = int(current.get("sessions") or 0)
+    prev_revenue = float(previous.get("totalRevenue") or 0)
+    prev_purchases = int(previous.get("ecommercePurchases") or 0)
+    prev_sessions = int(previous.get("sessions") or 0)
+    avg_purchase = revenue / purchases if purchases else 0
+    prev_avg_purchase = prev_revenue / prev_purchases if prev_purchases else 0
+
+    def kpi(value: float, prev: float, money: bool = False) -> dict:
+        return {
+            "value": _money(value) if money else round(float(value or 0), 2),
+            "prev": _money(prev) if money else round(float(prev or 0), 2),
+            "delta": _pct_delta(value, prev),
+        }
+
+    out = {
+        "property": prop,
+        "period_days": period_days,
+        "period": f"{cur_start} -> {cur_end}",
+        "previous_period": f"{prev_start} -> {prev_end}",
+        "channel": _channel_key(channel),
+        "channel_label": _channel_label(channel),
+        "kpis": {
+            "revenue": kpi(revenue, prev_revenue, money=True),
+            "purchases": kpi(purchases, prev_purchases),
+            "avg_purchase_revenue": kpi(avg_purchase, prev_avg_purchase, money=True),
+            "sessions": kpi(sessions, prev_sessions),
+        },
+        "_cached_at": time.time(),
+    }
+    try:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+    return out
 
 
 def get_analytics_data(

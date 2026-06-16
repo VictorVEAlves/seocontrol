@@ -2,6 +2,8 @@ import json
 
 import app as dashboard
 import config
+import modules.ga4_api as ga4_api
+import modules.gemini_insights as gemini_insights
 import modules.gsc_api as gsc_api
 
 
@@ -81,3 +83,116 @@ def test_dashboard_persists_refreshed_gsc_token(monkeypatch):
     assert saved["gsc_token_json"] == new_token
 
     config.clear_runtime_site_config()
+
+
+def test_dashboard_data_passes_custom_date_range(monkeypatch):
+    calls = {}
+    monkeypatch.setenv("AUTH_REQUIRED", "0")
+    monkeypatch.setattr(
+        dashboard,
+        "_dashboard_setup_status",
+        lambda: (True, "", {"gsc_token_json": "old-token"}),
+    )
+    monkeypatch.setattr(dashboard, "_persist_dashboard_refreshed_gsc_token", lambda initial="": None)
+
+    def fake_get_dashboard_data(period_days=28, start_date=None, end_date=None):
+        calls.update(period_days=period_days, start_date=start_date, end_date=end_date)
+        return {"kpis": {}, "time_series": [], "top_queries": [], "top_pages": []}
+
+    monkeypatch.setattr(gsc_api, "get_dashboard_data", fake_get_dashboard_data)
+
+    response = dashboard.app.test_client().get(
+        "/dashboard/data?start_date=2026-06-01&end_date=2026-06-10"
+    )
+
+    assert response.status_code == 200
+    assert calls == {
+        "period_days": 10,
+        "start_date": "2026-06-01",
+        "end_date": "2026-06-10",
+    }
+
+
+def test_dashboard_rejects_future_custom_end_date(monkeypatch):
+    monkeypatch.setenv("AUTH_REQUIRED", "0")
+    monkeypatch.setattr(dashboard, "_dashboard_setup_status", lambda: (True, "", {}))
+
+    response = dashboard.app.test_client().get(
+        "/dashboard/data?start_date=2026-06-01&end_date=2026-06-16"
+    )
+
+    assert response.status_code == 400
+    assert "posterior a ontem" in response.get_json()["error"]
+
+
+def test_dashboard_ai_prompt_includes_organic_revenue(monkeypatch, tmp_path):
+    captured = {}
+
+    monkeypatch.setattr(
+        gsc_api,
+        "_dashboard_cache_file",
+        lambda kind, period: tmp_path / f"{kind}_{period}.json",
+    )
+    monkeypatch.setattr(
+        gsc_api,
+        "get_dashboard_data",
+        lambda period_days=28, start_date=None, end_date=None: {
+            "kpis": {
+                "clicks": {"value": 1000, "prev": 800, "delta": 25.0},
+                "impressions": {"value": 50000, "prev": 45000, "delta": 11.1},
+                "ctr": {"value": 2.0, "prev": 1.78, "delta": 12.4},
+                "position": {"value": 6.0, "prev": 6.5, "delta": -7.7},
+            },
+            "top_queries": [],
+            "top_pages": [],
+        },
+    )
+    monkeypatch.setattr(
+        ga4_api,
+        "get_revenue_summary",
+        lambda **kwargs: {
+            "kpis": {
+                "revenue": {"value": 1500, "prev": 1000, "delta": 50.0},
+                "purchases": {"value": 10, "prev": 8, "delta": 25.0},
+                "avg_purchase_revenue": {"value": 150, "prev": 125, "delta": 20.0},
+                "sessions": {"value": 900, "prev": 750, "delta": 20.0},
+            }
+        },
+    )
+    monkeypatch.setattr(config, "get_provider_api_key", lambda provider: "gemini-key")
+    monkeypatch.setattr(gemini_insights, "_GEMINI_MODELS", ["test-model"])
+    monkeypatch.setattr(gemini_insights, "_extract_text", lambda payload: "Analise pronta")
+
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"ok": True}
+
+    class FakeSession:
+        trust_env = True
+
+        def post(self, url, json=None, timeout=None):
+            captured["prompt"] = json["contents"][0]["parts"][0]["text"]
+            return FakeResponse()
+
+    monkeypatch.setattr("requests.Session", lambda: FakeSession())
+
+    result = gsc_api.get_dashboard_ai(
+        period_days=10,
+        start_date="2026-06-01",
+        end_date="2026-06-10",
+    )
+
+    assert result["ai_summary"].startswith("**Impacto em Receita**")
+    assert result["ai_summary"].endswith("Analise pronta")
+    assert result["revenue_context_available"] is True
+    assert result["revenue_highlights"]["revenue"] == 1500
+    assert result["revenue_highlights"]["purchases"] == 10
+    assert "Faturamento orgânico: R$ 1.500,00 (+50.0%)" in captured["prompt"]
+    assert "Compras orgânicas: 10 (+25.0%)" in captured["prompt"]
+    assert "Ticket médio orgânico: R$ 150,00 (+20.0%)" in captured["prompt"]
+    assert "**Impacto em Receita**" in captured["prompt"]

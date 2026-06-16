@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import re
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -163,7 +164,7 @@ def _refresh_credentials_direct(creds, token_file: Path, timeout: int = 10):
     return creds
 
 
-def _dashboard_cache_file(kind: str, period_days: int) -> Path:
+def _dashboard_cache_file(kind: str, period_days: int | str) -> Path:
     raw_key = "|".join([
         get_site_owner_user_id() or "local",
         get_site_id() or "",
@@ -171,7 +172,30 @@ def _dashboard_cache_file(kind: str, period_days: int) -> Path:
     ])
     site_key = hashlib.sha1(raw_key.encode("utf-8")).hexdigest()
     folder = get_runtime_dir()
-    return folder / f"dashboard_{kind}_{site_key}_{period_days}d.json"
+    period_key = re.sub(r"[^0-9A-Za-z_-]+", "_", str(period_days or "default"))
+    return folder / f"dashboard_{kind}_{site_key}_{period_key}d.json"
+
+
+def _dashboard_periods(
+    period_days: int = 28,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> tuple[date, date, date, date, int]:
+    if start_date and end_date:
+        cur_start = date.fromisoformat(str(start_date))
+        cur_end = date.fromisoformat(str(end_date))
+        if cur_start > cur_end:
+            raise ValueError("A data inicial deve ser anterior a data final.")
+        days = (cur_end - cur_start).days + 1
+        if days > 500:
+            raise ValueError("O intervalo do dashboard deve ter no maximo 500 dias.")
+    else:
+        days = max(1, min(500, int(period_days or 28)))
+        cur_end = date.today() - timedelta(days=2)
+        cur_start = cur_end - timedelta(days=days - 1)
+    prev_end = cur_start - timedelta(days=1)
+    prev_start = prev_end - timedelta(days=days - 1)
+    return cur_start, cur_end, prev_start, prev_end, days
 
 
 def _gsc_query_url() -> str:
@@ -912,11 +936,25 @@ def get_top_queries(comparison: str = "week", limit: int = 500) -> dict:
     return {"top_queries": top_queries}
 
 
-def get_dashboard_data(period_days: int = 28) -> dict:
+def get_dashboard_data(
+    period_days: int = 28,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> dict:
     """Fetch GSC performance data only (no Gemini). Fast — cached 1h."""
     import time as _time
 
-    cache_file = _dashboard_cache_file("gsc", period_days)
+    try:
+        cur_start, cur_end, prev_start, prev_end, period_days = _dashboard_periods(
+            period_days,
+            start_date,
+            end_date,
+        )
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    cache_key = f"{cur_start}_{cur_end}" if start_date and end_date else period_days
+    cache_file = _dashboard_cache_file("gsc", cache_key)
     try:
         if cache_file.exists():
             cached = json.loads(cache_file.read_text(encoding="utf-8"))
@@ -931,12 +969,6 @@ def get_dashboard_data(period_days: int = 28) -> dict:
         _bearer = _get_gsc_bearer(timeout=20)
     except Exception as exc:
         return {"error": str(exc)}
-
-    today      = date.today()
-    cur_end    = today    - timedelta(days=2)
-    cur_start  = cur_end  - timedelta(days=period_days - 1)
-    prev_end   = cur_start - timedelta(days=1)
-    prev_start = prev_end  - timedelta(days=period_days - 1)
 
     print(f"    Dashboard: {cur_start} → {cur_end} vs {prev_start} → {prev_end}")
 
@@ -1057,6 +1089,9 @@ def get_dashboard_data(period_days: int = 28) -> dict:
 
     out = {
         "period_days":  period_days,
+        "period_start": str(cur_start),
+        "period_end": str(cur_end),
+        "previous_period": f"{prev_start} -> {prev_end}",
         "period":       f"{cur_start} → {cur_end}",
         "kpis":         kpis,
         "time_series":  time_series,
@@ -1269,21 +1304,38 @@ def get_pages_inventory(period_days: int = 28, limit: int = 2500) -> dict:
     return out
 
 
-def get_dashboard_ai(period_days: int = 28) -> dict:
+def get_dashboard_ai(
+    period_days: int = 28,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> dict:
     """Generate Gemini analysis for the dashboard. Loads cached GSC data — runs independently."""
     import time as _time
 
-    ai_cache = _dashboard_cache_file("ai", period_days)
+    try:
+        cur_start, cur_end, prev_start, prev_end, period_days = _dashboard_periods(
+            period_days,
+            start_date,
+            end_date,
+        )
+    except Exception as exc:
+        return {"ai_summary": "", "ai_error": str(exc)}
+
+    cache_key = f"{cur_start}_{cur_end}" if start_date and end_date else period_days
+    ai_cache = _dashboard_cache_file("ai", cache_key)
     try:
         if ai_cache.exists():
             cached = json.loads(ai_cache.read_text(encoding="utf-8"))
-            if _time.time() - float(cached.get("_cached_at", 0)) < 3600:
+            if (
+                cached.get("_revenue_context_version") == 1
+                and _time.time() - float(cached.get("_cached_at", 0)) < 3600
+            ):
                 return cached
     except Exception:
         pass
 
     # Load (or fetch) GSC data to build the prompt
-    gsc = get_dashboard_data(period_days)
+    gsc = get_dashboard_data(period_days, start_date=start_date, end_date=end_date)
     if gsc.get("error"):
         return {"ai_summary": "", "ai_error": gsc["error"]}
 
@@ -1299,6 +1351,18 @@ def get_dashboard_ai(period_days: int = 28) -> dict:
     prev_impr   = kpis.get("impressions", {}).get("prev", 0)
     prev_ctr    = kpis.get("ctr",         {}).get("prev", 0.0)
     prev_pos    = kpis.get("position",    {}).get("prev", 0.0)
+
+    revenue_data: dict = {}
+    try:
+        from modules.ga4_api import get_revenue_summary
+        revenue_data = get_revenue_summary(
+            period_days=period_days,
+            channel="organic",
+            start_date=str(cur_start),
+            end_date=str(cur_end),
+        )
+    except Exception as exc:
+        revenue_data = {"error": str(exc)}
 
     from config import get_provider_api_key
     gemini_key = get_provider_api_key("gemini") or GEMINI_API_KEY or os.environ.get("GEMINI_API_KEY", "")
@@ -1322,14 +1386,72 @@ def get_dashboard_ai(period_days: int = 28) -> dict:
             )
         return "\n".join(lines)
 
+    def _fmt_brl(value):
+        formatted = f"{float(value or 0):,.2f}"
+        return "R$ " + formatted.replace(",", "_").replace(".", ",").replace("_", ".")
+
+    revenue_kpis = revenue_data.get("kpis") or {}
+    revenue_available = bool(revenue_kpis) and not revenue_data.get("error")
+    if revenue_available:
+        revenue = revenue_kpis.get("revenue") or {}
+        purchases = revenue_kpis.get("purchases") or {}
+        ticket = revenue_kpis.get("avg_purchase_revenue") or {}
+        sessions = revenue_kpis.get("sessions") or {}
+        purchase_rate = (
+            float(purchases.get("value") or 0) / float(sessions.get("value") or 0) * 100
+            if sessions.get("value")
+            else 0.0
+        )
+        revenue_per_click = (
+            float(revenue.get("value") or 0) / float(cur_clicks)
+            if cur_clicks
+            else 0.0
+        )
+
+        def _revenue_delta(info):
+            delta = info.get("delta")
+            return f"{delta:+.1f}%" if delta is not None else "N/A"
+
+        revenue_context = f"""== RESULTADO ORGÂNICO NO GA4 ==
+Faturamento orgânico: {_fmt_brl(revenue.get('value'))} ({_revenue_delta(revenue)})
+Faturamento anterior: {_fmt_brl(revenue.get('prev'))}
+Compras orgânicas: {int(purchases.get('value') or 0):,} ({_revenue_delta(purchases)})
+Ticket médio orgânico: {_fmt_brl(ticket.get('value'))} ({_revenue_delta(ticket)})
+Sessões orgânicas: {int(sessions.get('value') or 0):,} ({_revenue_delta(sessions)})
+Taxa de compra orgânica: {purchase_rate:.2f}%
+Receita por clique GSC: {_fmt_brl(revenue_per_click)}
+
+Use estes dados para relacionar visibilidade e tráfego com resultado comercial. Trate a relação como correlação, não como causalidade garantida."""
+        revenue_highlights = {
+            "revenue": float(revenue.get("value") or 0),
+            "revenue_delta": revenue.get("delta"),
+            "purchases": int(purchases.get("value") or 0),
+            "purchases_delta": purchases.get("delta"),
+            "ticket": float(ticket.get("value") or 0),
+            "ticket_delta": ticket.get("delta"),
+            "sessions": int(sessions.get("value") or 0),
+            "purchase_rate": round(purchase_rate, 2),
+        }
+        revenue_summary_text = f"""**Impacto em Receita**
+* O tráfego orgânico gerou {_fmt_brl(revenue.get('value'))} em faturamento, variação de {_revenue_delta(revenue)} contra o período anterior.
+* Foram {int(purchases.get('value') or 0):,} compras orgânicas ({_revenue_delta(purchases)}), com ticket médio de {_fmt_brl(ticket.get('value'))} ({_revenue_delta(ticket)}).
+* A taxa de compra orgânica foi de {purchase_rate:.2f}% sobre {int(sessions.get('value') or 0):,} sessões."""
+    else:
+        revenue_context = """== RESULTADO ORGÂNICO NO GA4 ==
+Dados de receita indisponíveis neste período. Não invente faturamento, compras ou ticket médio."""
+        revenue_highlights = {}
+        revenue_summary_text = ""
+
     prompt = f"""Você é um analista sênior de SEO. Analise os dados reais do Google Search Console de {get_site_url()} e gere um relatório executivo completo em PT-BR.
 
-== PERÍODO: últimos {period_days} dias vs {period_days} anteriores ==
+== PERÍODO: {cur_start} a {cur_end} vs {prev_start} a {prev_end} ==
 Cliques:    {cur_clicks:,}  ({_d('clicks')})
 Impressões: {cur_impr:,}  ({_d('impressions')})
 CTR médio:  {cur_ctr:.2f}%  ({_d('ctr')})
 Posição:    {cur_pos:.1f}   ({_d('position')} — menor = melhor)
 Período anterior: {prev_clicks:,} cliques | {prev_impr:,} impressões | CTR {prev_ctr:.2f}% | pos {prev_pos:.1f}
+
+{revenue_context}
 
 == TOP QUERIES ==
 {_fmt_rows(top_queries, 'query')}
@@ -1341,7 +1463,10 @@ Período anterior: {prev_clicks:,} cliques | {prev_impr:,} impressões | CTR {pr
 Use exatamente estes títulos em negrito (**título**). Cada seção deve citar números reais dos dados acima.
 
 **Visão Geral**
-Resume o período em 2-3 frases com os números absolutos e variações percentuais mais relevantes.
+Resume o período em 2-3 frases com os números absolutos e variações percentuais mais relevantes. Quando houver GA4, inclua o faturamento orgânico.
+
+**Impacto em Receita**
+Quando houver dados GA4, explique em 2-3 bullets como tráfego, compras, ticket médio e faturamento evoluíram juntos. Diferencie claramente correlação de causalidade. Se o GA4 estiver indisponível, informe isso em uma frase.
 
 **Destaques Positivos**
 2-3 bullets com o que está indo bem (métricas crescendo, CTR alto, posição melhorando). Cite números.
@@ -1392,7 +1517,18 @@ Responda apenas em PT-BR. Sem texto fora das seções definidas."""
     except Exception as exc:
         ai_error = str(exc)
 
-    out = {"ai_summary": ai_summary, "ai_error": ai_error, "_cached_at": _time.time()}
+    if revenue_summary_text and "impacto em receita" not in ai_summary.lower():
+        ai_summary = f"{revenue_summary_text}\n\n{ai_summary}".strip()
+
+    out = {
+        "ai_summary": ai_summary,
+        "ai_error": ai_error,
+        "revenue_context_available": revenue_available,
+        "revenue_error": str(revenue_data.get("error") or ""),
+        "revenue_highlights": revenue_highlights,
+        "_revenue_context_version": 1,
+        "_cached_at": _time.time(),
+    }
     try:
         ai_cache.parent.mkdir(parents=True, exist_ok=True)
         ai_cache.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")

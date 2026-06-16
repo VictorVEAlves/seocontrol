@@ -68,6 +68,19 @@ def test_dashboard_frontend_has_error_timeout_helpers(monkeypatch):
     assert "fetchJsonWithTimeout" in html
     assert 'id="chart-error"' in html
     assert "Tempo esgotado ao buscar dados do Google Search Console" in html
+    assert "/dashboard/revenue" in html
+    assert "start_date=" in html
+    assert 'id="date-filter-toggle"' in html
+    assert 'id="custom-start"' in html
+    assert 'data-preset="last_30"' in html
+    assert 'data-preset="last_month"' in html
+    assert 'data-preset="year_to_date"' in html
+    assert 'id="rv-revenue"' in html
+    assert 'id="rv-purchases"' in html
+    assert 'id="rv-avg_purchase_revenue"' in html
+    assert 'id="gemini-revenue"' in html
+    assert "renderAIRevenue" in html
+    assert "Faturamento no período" in html
 
 
 def test_dashboard_data_uses_error_status(monkeypatch):
