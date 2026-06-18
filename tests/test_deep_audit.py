@@ -124,3 +124,34 @@ def test_audit_stream_replays_events_to_multiple_clients(monkeypatch):
     finally:
         with dashboard._AUDIT_LOCK:
             dashboard._AUDIT_JOBS.pop(job_id, None)
+
+
+def test_audit_stream_restores_events_from_disk(monkeypatch, tmp_path):
+    monkeypatch.setattr(dashboard, "_auth_required", lambda: False)
+    monkeypatch.setattr(dashboard, "_AUDIT_JOB_DIR", tmp_path)
+    job_id = "stream-restore-test"
+
+    with dashboard._AUDIT_LOCK:
+        dashboard._AUDIT_JOBS.pop(job_id, None)
+    dashboard._audit_register(job_id)
+    dashboard._audit_publish(job_id, {
+        "step": "onpage",
+        "label": "Auditoria On-Page",
+        "status": "running",
+        "summary": "10/20 URLs analisadas",
+        "data": {},
+    })
+    dashboard._audit_publish(job_id, {"done": True, "health": 88})
+
+    with dashboard._AUDIT_LOCK:
+        dashboard._AUDIT_JOBS.pop(job_id, None)
+
+    try:
+        response = dashboard.app.test_client().get(f"/full-audit/stream/{job_id}").get_data(as_text=True)
+
+        assert '"step": "onpage"' in response
+        assert '"summary": "10/20 URLs analisadas"' in response
+        assert '"done": true' in response
+    finally:
+        with dashboard._AUDIT_LOCK:
+            dashboard._AUDIT_JOBS.pop(job_id, None)

@@ -8143,10 +8143,13 @@ _AUDIT_LOCK = threading.Lock()
 try:
     from config import BASE_DIR as _AUDIT_BASE_DIR, get_runtime_dir as _get_runtime_dir
     _LAST_AUDIT_DIR = _get_runtime_dir() / "audits"
+    _AUDIT_JOB_DIR = _get_runtime_dir() / "audit_jobs"
     _LEGACY_LAST_AUDIT_FILE = _AUDIT_BASE_DIR / ".last_full_audit.json"
 except Exception:
     import pathlib as _pl
-    _LAST_AUDIT_DIR = (_pl.Path(os.environ.get("TMPDIR")) / "seo-audit-runtime" / "audits") if os.environ.get("TMPDIR") else (_pl.Path(".runtime") / "audits")
+    _AUDIT_RUNTIME_DIR = (_pl.Path(os.environ.get("TMPDIR")) / "seo-audit-runtime") if os.environ.get("TMPDIR") else _pl.Path(".runtime")
+    _LAST_AUDIT_DIR = _AUDIT_RUNTIME_DIR / "audits"
+    _AUDIT_JOB_DIR = _AUDIT_RUNTIME_DIR / "audit_jobs"
     _LEGACY_LAST_AUDIT_FILE = _pl.Path(".last_full_audit.json")
 
 
@@ -8267,6 +8270,111 @@ _AUDIT_CSS = """<style>
 </style>"""
 
 
+_AUDIT_JOB_PERSIST_KEYS = {
+    "status",
+    "result",
+    "partial_result",
+    "user_id",
+    "site_id",
+    "context_key",
+    "kind",
+    "scope_key",
+    "cancel_requested",
+    "created_at",
+    "updated_at",
+}
+
+
+def _audit_job_meta_file(job_id: str) -> Path:
+    return _AUDIT_JOB_DIR / f"{job_id}.json"
+
+
+def _audit_job_events_file(job_id: str) -> Path:
+    return _AUDIT_JOB_DIR / f"{job_id}.jsonl"
+
+
+def _audit_public_job_state(job: dict) -> dict:
+    return {key: job.get(key) for key in _AUDIT_JOB_PERSIST_KEYS if key in job}
+
+
+def _audit_persist_job(job_id: str, job: dict) -> None:
+    try:
+        _AUDIT_JOB_DIR.mkdir(parents=True, exist_ok=True)
+        payload = _audit_public_job_state(job)
+        payload["job_id"] = job_id
+        _audit_job_meta_file(job_id).write_text(
+            _json_mod.dumps(payload, ensure_ascii=False, default=str),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+def _audit_append_event(job_id: str, event: dict) -> None:
+    try:
+        _AUDIT_JOB_DIR.mkdir(parents=True, exist_ok=True)
+        with _audit_job_events_file(job_id).open("a", encoding="utf-8") as fh:
+            fh.write(_json_mod.dumps(event, ensure_ascii=False, default=str) + "\n")
+    except Exception:
+        pass
+
+
+def _audit_load_events(job_id: str) -> list[dict]:
+    events = []
+    try:
+        path = _audit_job_events_file(job_id)
+        if not path.exists():
+            return events
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            item = _json_mod.loads(line)
+            if isinstance(item, dict):
+                events.append(item)
+    except Exception:
+        pass
+    return events
+
+
+def _audit_restore_job(job_id: str) -> dict | None:
+    try:
+        path = _audit_job_meta_file(job_id)
+        if not path.exists():
+            return None
+        meta = _json_mod.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(meta, dict):
+            return None
+        q: _queue_mod.Queue = _queue_mod.Queue()
+        job = {
+            "q": q,
+            "events": _audit_load_events(job_id),
+            "condition": threading.Condition(),
+            **{key: meta.get(key) for key in _AUDIT_JOB_PERSIST_KEYS if key in meta},
+        }
+        with _AUDIT_LOCK:
+            _AUDIT_JOBS[job_id] = job
+        return job
+    except Exception:
+        return None
+
+
+def _audit_update_job(job_id: str, **updates) -> dict | None:
+    with _AUDIT_LOCK:
+        job = _AUDIT_JOBS.get(job_id)
+    if not job:
+        job = _audit_restore_job(job_id)
+    if not job:
+        return None
+    with _AUDIT_LOCK:
+        job = _AUDIT_JOBS.get(job_id) or job
+        job.update(updates)
+        job["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _AUDIT_JOBS[job_id] = job
+    if job:
+        _audit_persist_job(job_id, job)
+    return job
+
+
 def _audit_register(job_id: str, user_id: str = "", site_id: str = "",
                     context_key: str = "") -> _queue_mod.Queue:
     q: _queue_mod.Queue = _queue_mod.Queue()
@@ -8281,16 +8389,22 @@ def _audit_register(job_id: str, user_id: str = "", site_id: str = "",
             "user_id": user_id,
             "site_id": site_id,
             "context_key": context_key,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         if len(_AUDIT_JOBS) > 20:
             oldest = next(iter(_AUDIT_JOBS))
             del _AUDIT_JOBS[oldest]
+        job = _AUDIT_JOBS[job_id]
+    _audit_persist_job(job_id, job)
     return q
 
 
 def _audit_get(job_id: str) -> dict | None:
     with _AUDIT_LOCK:
         job = _AUDIT_JOBS.get(job_id)
+    if not job:
+        job = _audit_restore_job(job_id)
     if not job:
         return None
     if _auth_required() and job.get("user_id") != _current_user_id():
@@ -8302,7 +8416,14 @@ def _audit_publish(job_id: str, event: dict) -> None:
     with _AUDIT_LOCK:
         job = _AUDIT_JOBS.get(job_id)
     if not job:
+        job = _audit_restore_job(job_id)
+    if not job:
         return
+    if event.get("done"):
+        job["status"] = event.get("status") or "done"
+    job["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _audit_append_event(job_id, event)
+    _audit_persist_job(job_id, job)
     condition = job.get("condition")
     if not condition:
         q = job.get("q")
@@ -8781,9 +8902,7 @@ def _run_deep_audit(job_id: str, q: _queue_mod.Queue, scope_key: str = "10000",
             _deep_audit_update_summary(result, batch_results)
             result["processed_batches"] = batch_no
             result["updated_at"] = datetime.now(timezone.utc).isoformat()
-            with _AUDIT_LOCK:
-                if job_id in _AUDIT_JOBS:
-                    _AUDIT_JOBS[job_id]["partial_result"] = result
+            _audit_update_job(job_id, partial_result=result)
 
         if result.get("status") != "cancelled":
             result["status"] = "done"
@@ -8798,13 +8917,7 @@ def _run_deep_audit(job_id: str, q: _queue_mod.Queue, scope_key: str = "10000",
             result.get("categories", {}).items(),
             key=lambda item: (0 if item[1].get("severity") == "issue" else 1, -int(item[1].get("pages", 0)), item[0]),
         ))
-        with _AUDIT_LOCK:
-            if job_id in _AUDIT_JOBS:
-                _AUDIT_JOBS[job_id].update({
-                    "status": result["status"],
-                    "result": result,
-                    "kind": "deep-audit",
-                })
+        _audit_update_job(job_id, status=result["status"], result=result, kind="deep-audit")
         _audit_publish(job_id, {
             "done": True,
             "status": result["status"],
@@ -8814,13 +8927,7 @@ def _run_deep_audit(job_id: str, q: _queue_mod.Queue, scope_key: str = "10000",
     except Exception as exc:
         result["status"] = "error"
         result["error"] = str(exc)
-        with _AUDIT_LOCK:
-            if job_id in _AUDIT_JOBS:
-                _AUDIT_JOBS[job_id].update({
-                    "status": "error",
-                    "result": result,
-                    "kind": "deep-audit",
-                })
+        _audit_update_job(job_id, status="error", result=result, kind="deep-audit")
         emit("crawl", "Crawler On-Page", "error", str(exc)[:160], {"percent": 100})
         _audit_publish(job_id, {"done": True, "status": "error", "report_url": f"/deep-audit/report/{job_id}"})
 
@@ -8947,9 +9054,7 @@ def _run_full_audit(job_id: str, q: _queue_mod.Queue, scope_key: str = "priority
     health = _health_score(results)
     results["_health"] = health
     results["_completed_at"] = _dt_audit.datetime.now().strftime("%d/%m/%Y %H:%M")
-    with _AUDIT_LOCK:
-        if job_id in _AUDIT_JOBS:
-            _AUDIT_JOBS[job_id].update({"status": "finalizing", "result": results})
+    _audit_update_job(job_id, status="finalizing", result=results)
     _save_last_audit(results, audit_context_key, site_config=site_config)
     emit("persist", "Kanban & banco de dados", "running", "Salvando relatório e tarefas no Kanban...")
     try:
@@ -8964,9 +9069,7 @@ def _run_full_audit(job_id: str, q: _queue_mod.Queue, scope_key: str = "priority
         emit("persist", "Kanban & banco de dados", "warn", f"Relatório gerado, mas Kanban não foi atualizado: {str(exc)[:120]}")
     _save_last_audit(results, audit_context_key, site_config=site_config)
     _audit_publish(job_id, {"done": True, "health": health})
-    with _AUDIT_LOCK:
-        if job_id in _AUDIT_JOBS:
-            _AUDIT_JOBS[job_id].update({"status": "done", "result": results})
+    _audit_update_job(job_id, status="done", result=results)
 
 
 @app.route("/full-audit")
@@ -9344,13 +9447,7 @@ def deep_audit_start():
     job_id = uuid.uuid4().hex
     context_key = _audit_context_key(site_config=site_config, user_id=_current_user_id())
     q = _audit_register(job_id, _current_user_id(), _current_site_id(), context_key)
-    with _AUDIT_LOCK:
-        if job_id in _AUDIT_JOBS:
-            _AUDIT_JOBS[job_id].update({
-                "kind": "deep-audit",
-                "scope_key": scope_key,
-                "cancel_requested": False,
-            })
+    _audit_update_job(job_id, kind="deep-audit", scope_key=scope_key, cancel_requested=False)
     threading.Thread(
         target=_run_deep_audit,
         args=(job_id, q, scope_key, site_config, context_key),
@@ -9372,9 +9469,7 @@ def deep_audit_cancel(job_id):
     job = _audit_get(job_id)
     if not job or job.get("kind") != "deep-audit":
         return jsonify({"error": "job not found"}), 404
-    with _AUDIT_LOCK:
-        if job_id in _AUDIT_JOBS:
-            _AUDIT_JOBS[job_id]["cancel_requested"] = True
+    _audit_update_job(job_id, cancel_requested=True)
     return jsonify({"ok": True})
 
 
