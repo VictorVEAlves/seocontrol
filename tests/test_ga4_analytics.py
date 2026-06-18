@@ -147,6 +147,37 @@ def test_dashboard_revenue_accepts_custom_date_range(monkeypatch):
     assert calls["channel"] == "organic"
 
 
+def test_dashboard_revenue_reconnect_required_on_revoked_google_token(monkeypatch, tmp_path):
+    saved = {}
+    token_file = tmp_path / "stale-token.json"
+    token_file.write_text("stale", encoding="utf-8")
+
+    monkeypatch.setattr(
+        dashboard,
+        "_analytics_setup_status",
+        lambda: (True, "", {"gsc_token_json": '{"token":"old"}'}),
+    )
+    monkeypatch.setattr(dashboard, "_is_authenticated", lambda: True)
+    monkeypatch.setattr(dashboard, "_active_gsc_files", lambda: (tmp_path / "creds.json", token_file))
+    monkeypatch.setattr(dashboard, "_update_active_user_site_config", lambda **kwargs: saved.update(kwargs))
+    monkeypatch.setattr(
+        ga4_api,
+        "get_revenue_summary",
+        lambda **kwargs: {
+            "error": "Google Analytics nao autorizado para este token. Detalhe: Token has been expired or revoked."
+        },
+    )
+
+    response = dashboard.app.test_client().get("/dashboard/revenue?period=7")
+
+    payload = response.get_json()
+    assert response.status_code == 401
+    assert payload["google_reconnect_required"] is True
+    assert saved["gsc_token_json"] is None
+    assert saved["gsc_account_email"] is None
+    assert not token_file.exists()
+
+
 def test_custom_period_builds_equal_previous_period():
     current_start, current_end, previous_start, previous_end, days = ga4_api._resolved_periods(
         28,

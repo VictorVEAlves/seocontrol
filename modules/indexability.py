@@ -1,7 +1,7 @@
 from urllib.parse import urlparse
 
 from config import get_site_url
-from modules.crawler import get_page, normalize_url
+from modules.crawler import get_page, normalize_url, shared_session
 
 
 def audit_url(url: str) -> dict:
@@ -55,7 +55,8 @@ def audit_url(url: str) -> dict:
 
 
 def run(urls: list) -> dict:
-    rows = [audit_url(url) for url in urls]
+    with shared_session(cache=True):
+        rows = [audit_url(url) for url in urls]
     return {
         "total": len(rows),
         "indexable": len([r for r in rows if r["indexable"]]),

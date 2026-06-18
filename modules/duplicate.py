@@ -1,5 +1,5 @@
 from difflib import SequenceMatcher
-from modules.crawler import get_page
+from modules.crawler import get_page, shared_session
 from config import get_brand_aliases, get_site_url
 
 
@@ -38,12 +38,13 @@ def run(urls: list, threshold: float = 0.80) -> dict:
     def full_url(u: str) -> str:
         return u if u.startswith("http") else base + u
 
-    try:
-        from rich.progress import track
-        pages = [_fetch_seo(full_url(u))
-                 for u in track(urls, description="Verificando duplicatas...")]
-    except ImportError:
-        pages = [_fetch_seo(full_url(u)) for u in urls]
+    with shared_session(cache=True):
+        try:
+            from rich.progress import track
+            pages = [_fetch_seo(full_url(u))
+                     for u in track(urls, description="Verificando duplicatas...")]
+        except ImportError:
+            pages = [_fetch_seo(full_url(u)) for u in urls]
 
     dup_titles   = []
     dup_descs    = []

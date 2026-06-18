@@ -1,6 +1,8 @@
 import time
 import requests
 from bs4 import BeautifulSoup
+from contextlib import contextmanager
+from contextvars import ContextVar
 from urllib.parse import urljoin, urlparse
 
 import sys
@@ -44,7 +46,6 @@ BASE_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
     "Cache-Control": "no-cache",
-    "Connection": "close",
     "DNT": "1",
     "Pragma": "no-cache",
     "Sec-Fetch-Dest": "document",
@@ -58,6 +59,27 @@ SKIP_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp", ".avif",
                    ".bmp", ".pdf", ".css", ".js", ".ico", ".woff", ".woff2",
                    ".ttf", ".xml", ".mp4", ".webm", ".mov", ".zip"}
 
+_ACTIVE_SESSION: ContextVar[requests.Session | None] = ContextVar("crawler_active_session", default=None)
+_ACTIVE_FETCH_CACHE: ContextVar[dict | None] = ContextVar("crawler_active_fetch_cache", default=None)
+
+
+@contextmanager
+def shared_session(cache: bool = False):
+    """Reuse HTTP connections and optional per-job URL responses."""
+    session = requests.Session()
+    session.headers.update(BASE_HEADERS)
+    session_token = _ACTIVE_SESSION.set(session)
+    cache_token = _ACTIVE_FETCH_CACHE.set({} if cache else None)
+    try:
+        yield session
+    finally:
+        _ACTIVE_FETCH_CACHE.reset(cache_token)
+        _ACTIVE_SESSION.reset(session_token)
+        try:
+            session.close()
+        except Exception:
+            pass
+
 
 def _request_headers(url: str) -> dict:
     parsed = urlparse(url)
@@ -68,7 +90,7 @@ def _request_headers(url: str) -> dict:
     return headers
 
 
-def get_page(url: str) -> tuple:
+def get_page(url: str, session: requests.Session | None = None) -> tuple:
     """
     Fetch a URL. Returns (status_code, soup, headers, final_url).
     headers dict includes extra keys:
@@ -76,35 +98,57 @@ def get_page(url: str) -> tuple:
       _redirect_status    : str — HTTP status of first redirect (e.g. "301", "302"), or ""
     Returns (0, None, {}, url) on connection error.
     """
+    cache = _ACTIVE_FETCH_CACHE.get()
+    if cache is not None and url in cache:
+        return cache[url]
+
+    active_session = session or _ACTIVE_SESSION.get()
+    owns_session = active_session is None
+    if active_session is None:
+        active_session = requests.Session()
+        active_session.headers.update(BASE_HEADERS)
+
     attempts = max(1, int(CRAWL_RETRIES) + 1)
     errors = []
-    for attempt in range(attempts):
-        try:
-            time.sleep(CRAWL_DELAY if attempt == 0 else min(2.0, CRAWL_DELAY + attempt * 0.5))
-            with requests.Session() as session:
-                session.headers.update(_request_headers(url))
-                resp = session.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True)
-            final_url = resp.url
-            content_type = resp.headers.get("content-type", "")
-            soup = None
-            if resp.ok and "text/html" in content_type:
-                soup = BeautifulSoup(resp.text, "lxml")
-            headers = dict(resp.headers)
-            headers["_content_size_bytes"] = len(resp.content)
-            headers["_redirect_status"] = str(resp.history[0].status_code) if resp.history else ""
-            headers["_fetch_attempts"] = attempt + 1
-            return resp.status_code, soup, headers, final_url
-        except requests.RequestException as exc:
-            errors.append(f"{exc.__class__.__name__}: {exc}")
-            if attempt < attempts - 1:
-                continue
-            headers = {
-                "_fetch_error": str(exc),
-                "_fetch_error_type": exc.__class__.__name__,
-                "_fetch_errors": " | ".join(errors[-3:]),
-                "_fetch_attempts": attempts,
-            }
-            return 0, None, headers, url
+    try:
+        for attempt in range(attempts):
+            try:
+                time.sleep(CRAWL_DELAY if attempt == 0 else min(2.0, CRAWL_DELAY + attempt * 0.5))
+                active_session.headers.update(_request_headers(url))
+                resp = active_session.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+                final_url = resp.url
+                content_type = resp.headers.get("content-type", "")
+                soup = None
+                if resp.ok and "text/html" in content_type:
+                    soup = BeautifulSoup(resp.text, "lxml")
+                headers = dict(resp.headers)
+                headers["_content_size_bytes"] = len(resp.content)
+                headers["_redirect_status"] = str(resp.history[0].status_code) if resp.history else ""
+                headers["_fetch_attempts"] = attempt + 1
+                result = (resp.status_code, soup, headers, final_url)
+                if cache is not None:
+                    cache[url] = result
+                return result
+            except requests.RequestException as exc:
+                errors.append(f"{exc.__class__.__name__}: {exc}")
+                if attempt < attempts - 1:
+                    continue
+                headers = {
+                    "_fetch_error": str(exc),
+                    "_fetch_error_type": exc.__class__.__name__,
+                    "_fetch_errors": " | ".join(errors[-3:]),
+                    "_fetch_attempts": attempts,
+                }
+                result = (0, None, headers, url)
+                if cache is not None:
+                    cache[url] = result
+                return result
+    finally:
+        if owns_session:
+            try:
+                active_session.close()
+            except Exception:
+                pass
 
 
 def is_internal(url: str) -> bool:
@@ -153,3 +197,11 @@ def extract_links(soup: BeautifulSoup, page_url: str) -> list:
             "is_internal": is_internal(abs_url),
         })
     return links
+
+
+def extract_canonical(soup: BeautifulSoup | None, page_url: str) -> str:
+    if not soup:
+        return ""
+    canonical = soup.find("link", rel="canonical")
+    href = canonical.get("href", "").strip() if canonical else ""
+    return normalize_url(href, page_url) if href else ""

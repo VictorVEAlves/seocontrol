@@ -79,6 +79,9 @@ def test_dashboard_frontend_has_error_timeout_helpers(monkeypatch):
     assert 'id="rv-purchases"' in html
     assert 'id="rv-avg_purchase_revenue"' in html
     assert 'id="gemini-revenue"' in html
+    assert 'id="google-reconnect-banner"' in html
+    assert "/settings#gsc" in html
+    assert "showGoogleReconnect" in html
     assert "renderAIRevenue" in html
     assert "Faturamento no período" in html
 

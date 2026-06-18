@@ -1,5 +1,5 @@
 import json
-from modules.crawler import get_page, extract_links, is_internal
+from modules.crawler import get_page, extract_links, is_internal, shared_session
 from config import get_site_url as _get_site_url
 
 HTML_SIZE_WARN_KB = 2560
@@ -243,10 +243,11 @@ def audit_pages(urls: list, verbose: bool = True, progress_callback=None,
         _iter = full_urls
     results = []
     total = len(full_urls)
-    for index, url in enumerate(_iter, start=1):
-        results.append(audit_page(url, collect_internal_links=check_internal_links))
-        if progress_callback:
-            progress_callback(index, total, url)
+    with shared_session(cache=True):
+        for index, url in enumerate(_iter, start=1):
+            results.append(audit_page(url, collect_internal_links=check_internal_links))
+            if progress_callback:
+                progress_callback(index, total, url)
 
     # ── Cross-page: duplicate meta titles ────────────────────────────────────
     title_map: dict = {}

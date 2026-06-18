@@ -22,6 +22,13 @@ def test_ai_insights_page_redirects_to_full_audit():
     assert response.headers["Location"].startswith("/full-audit")
 
 
+def test_responses_include_timing_headers():
+    response = dashboard.app.test_client().get("/healthz")
+
+    assert response.headers["X-Response-Time-ms"]
+    assert response.headers["Server-Timing"].startswith("app;dur=")
+
+
 def test_tool_output_hides_internal_command_details():
     output = dashboard.format_job_output({
         "status": "completed",

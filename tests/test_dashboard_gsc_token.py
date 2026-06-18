@@ -1,4 +1,5 @@
 import json
+from datetime import date, timedelta
 
 import app as dashboard
 import config
@@ -113,12 +114,48 @@ def test_dashboard_data_passes_custom_date_range(monkeypatch):
     }
 
 
+def test_dashboard_data_reconnect_required_clears_stale_google_token(monkeypatch, tmp_path):
+    saved = {}
+    token_file = tmp_path / "stale-token.json"
+    token_file.write_text("stale", encoding="utf-8")
+
+    monkeypatch.setenv("AUTH_REQUIRED", "0")
+    monkeypatch.setattr(
+        dashboard,
+        "_dashboard_setup_status",
+        lambda: (True, "", {"gsc_token_json": "old-token"}),
+    )
+    monkeypatch.setattr(dashboard, "_is_authenticated", lambda: True)
+    monkeypatch.setattr(dashboard, "_active_gsc_files", lambda: (tmp_path / "creds.json", token_file))
+    monkeypatch.setattr(dashboard, "_update_active_user_site_config", lambda **kwargs: saved.update(kwargs))
+    monkeypatch.setattr(
+        gsc_api,
+        "get_dashboard_data",
+        lambda period_days=28: {
+            "error": "refresh do GSC falhou: Token has been expired or revoked."
+        },
+    )
+
+    response = dashboard.app.test_client().get("/dashboard/data?period=28")
+
+    payload = response.get_json()
+    assert response.status_code == 401
+    assert payload["google_reconnect_required"] is True
+    assert payload["reconnect_url"].endswith("/settings#gsc")
+    assert saved["gsc_token_json"] is None
+    assert saved["available_gsc_sites"] is None
+    assert saved["available_ga4_properties"] is None
+    assert not token_file.exists()
+
+
 def test_dashboard_rejects_future_custom_end_date(monkeypatch):
     monkeypatch.setenv("AUTH_REQUIRED", "0")
     monkeypatch.setattr(dashboard, "_dashboard_setup_status", lambda: (True, "", {}))
+    start = date.today() - timedelta(days=2)
+    future = date.today() + timedelta(days=1)
 
     response = dashboard.app.test_client().get(
-        "/dashboard/data?start_date=2026-06-01&end_date=2026-06-16"
+        f"/dashboard/data?start_date={start}&end_date={future}"
     )
 
     assert response.status_code == 400

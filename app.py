@@ -7,6 +7,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from collections import OrderedDict
 from datetime import date, datetime, timedelta, timezone
@@ -34,13 +35,39 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
+
+def _int_env(name: str, default: str) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return int(default)
+
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY") or "seo-audit-local-dev-2024"
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = _int_env("SEO_STATIC_CACHE_SECONDS", "31536000")
 
 # Allow OAuth over plain HTTP in local development
 os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")
 os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
+
+
+@app.before_request
+def _start_request_timer():
+    request.environ["seo_request_started_at"] = time.perf_counter()
+
+
+@app.after_request
+def _add_performance_headers(response):
+    started_at = request.environ.get("seo_request_started_at")
+    if started_at is not None:
+        duration_ms = (time.perf_counter() - float(started_at)) * 1000
+        response.headers["X-Response-Time-ms"] = f"{duration_ms:.1f}"
+        response.headers["Server-Timing"] = f"app;dur={duration_ms:.1f}"
+    if request.endpoint == "static":
+        max_age = _int_env("SEO_STATIC_CACHE_SECONDS", str(app.config.get("SEND_FILE_MAX_AGE_DEFAULT") or 31536000))
+        response.headers["Cache-Control"] = f"public, max-age={max_age}, immutable"
+    return response
 
 
 def _normalize_public_url(value: str) -> str:
@@ -2313,6 +2340,81 @@ def _persist_dashboard_refreshed_gsc_token(initial_token_json: str = "") -> None
         pass
 
 
+_GOOGLE_RECONNECT_ERROR_MARKERS = (
+    "expired or revoked",
+    "invalid_grant",
+    "token salvo foi rejeitado",
+    "token do google sem refresh_token",
+    "token do google expirado",
+    "google analytics nao autorizado",
+    "google analytics não autorizado",
+    "gsc não autenticado",
+    "gsc nao autenticado",
+    "google search console → conectar",
+)
+
+
+def _is_google_reconnect_error(message: str | None) -> bool:
+    """Return whether a Google API error means the saved OAuth token is no longer usable."""
+    text = str(message or "").lower()
+    return any(marker in text for marker in _GOOGLE_RECONNECT_ERROR_MARKERS)
+
+
+def _clear_active_google_connection() -> None:
+    """Clear stale Google OAuth data for the active site so Settings does not show a false connection."""
+    try:
+        _cred_file, token_file = _active_gsc_files()
+        if token_file.exists():
+            token_file.unlink()
+    except Exception:
+        pass
+
+    try:
+        if _is_authenticated():
+            _update_active_user_site_config(
+                available_gsc_sites=None,
+                available_ga4_properties=None,
+                gsc_account_email=None,
+                gsc_token_json=None,
+            )
+        else:
+            save_site_config(
+                available_gsc_sites=[],
+                available_ga4_properties=[],
+                gsc_account_email="",
+                gsc_token_json="",
+            )
+    except Exception:
+        pass
+
+
+def _google_reconnect_response(raw_error: str | None, *, include_ai: bool = False) -> dict:
+    message = (
+        "Sua conexão com o Google expirou ou foi revogada. "
+        "Reconecte o Google em Configurações para voltar a carregar Search Console e Analytics."
+    )
+    payload = {
+        "error": message,
+        "detail": str(raw_error or ""),
+        "google_reconnect_required": True,
+        "setup_required": True,
+        "reconnect_url": url_for("settings") + "#gsc",
+    }
+    if include_ai:
+        payload.update({"ai_summary": "", "ai_error": message})
+    return payload
+
+
+def _handle_google_api_error_payload(data: dict | None, *, include_ai: bool = False) -> tuple[dict | None, int]:
+    raw_error = ""
+    if isinstance(data, dict):
+        raw_error = str(data.get("error") or data.get("ai_error") or "")
+    if not _is_google_reconnect_error(raw_error):
+        return None, 0
+    _clear_active_google_connection()
+    return _google_reconnect_response(raw_error, include_ai=include_ai), 401
+
+
 @app.route("/dashboard/data")
 def dashboard_data():
     from flask import jsonify
@@ -2332,10 +2434,16 @@ def dashboard_data():
             data = get_dashboard_data(period_days=period, start_date=start_date, end_date=end_date)
         else:
             data = get_dashboard_data(period_days=period)
+        reconnect_payload, reconnect_status = _handle_google_api_error_payload(data)
+        if reconnect_payload:
+            return jsonify(reconnect_payload), reconnect_status
         _persist_dashboard_refreshed_gsc_token(initial_token_json)
         status = 503 if isinstance(data, dict) and data.get("error") else 200
         return jsonify(data), status
     except Exception as exc:
+        if _is_google_reconnect_error(str(exc)):
+            _clear_active_google_connection()
+            return jsonify(_google_reconnect_response(str(exc))), 401
         return jsonify({"error": str(exc)}), 500
 
 
@@ -2358,9 +2466,15 @@ def dashboard_ai():
             data = get_dashboard_ai(period_days=period, start_date=start_date, end_date=end_date)
         else:
             data = get_dashboard_ai(period_days=period)
+        reconnect_payload, reconnect_status = _handle_google_api_error_payload(data, include_ai=True)
+        if reconnect_payload:
+            return jsonify(reconnect_payload), reconnect_status
         _persist_dashboard_refreshed_gsc_token(initial_token_json)
         return jsonify(data)
     except Exception as exc:
+        if _is_google_reconnect_error(str(exc)):
+            _clear_active_google_connection()
+            return jsonify(_google_reconnect_response(str(exc), include_ai=True)), 401
         return jsonify({"ai_summary": "", "ai_error": str(exc)})
 
 
@@ -2381,6 +2495,10 @@ def _pages_inventory_payload(period: int, limit: int, force: bool = False) -> di
             pass
     from modules.gsc_api import get_pages_inventory
     data = get_pages_inventory(period_days=period, limit=limit)
+    reconnect_payload, _reconnect_status = _handle_google_api_error_payload(data)
+    if reconnect_payload:
+        reconnect_payload["rows"] = []
+        return reconnect_payload
     _persist_dashboard_refreshed_gsc_token(initial_token_json)
     return data
 
@@ -2398,7 +2516,10 @@ def pages_data():
         limit = 2500
     try:
         data = _pages_inventory_payload(period, limit, force=request.args.get("force") == "1")
-        status = 503 if isinstance(data, dict) and data.get("error") else 200
+        if isinstance(data, dict) and data.get("google_reconnect_required"):
+            status = 401
+        else:
+            status = 503 if isinstance(data, dict) and data.get("error") else 200
         return jsonify(data), status
     except Exception as exc:
         return jsonify({"error": str(exc), "rows": []}), 500
@@ -2688,10 +2809,19 @@ def analytics_data():
     try:
         from modules.ga4_api import get_analytics_data
         data = get_analytics_data(period_days=period, force=request.args.get("force") == "1", channel=channel)
+        reconnect_payload, reconnect_status = _handle_google_api_error_payload(data)
+        if reconnect_payload:
+            return jsonify(reconnect_payload), reconnect_status
         _persist_dashboard_refreshed_gsc_token(initial_token_json)
-        status = 503 if isinstance(data, dict) and data.get("error") else 200
+        if isinstance(data, dict) and data.get("google_reconnect_required"):
+            status = 401
+        else:
+            status = 503 if isinstance(data, dict) and data.get("error") else 200
         return jsonify(data), status
     except Exception as exc:
+        if _is_google_reconnect_error(str(exc)):
+            _clear_active_google_connection()
+            return jsonify(_google_reconnect_response(str(exc))), 401
         return jsonify({"error": str(exc)}), 500
 
 
@@ -2714,10 +2844,16 @@ def dashboard_revenue():
         if start_date and end_date:
             kwargs.update(start_date=start_date, end_date=end_date)
         data = get_revenue_summary(**kwargs)
+        reconnect_payload, reconnect_status = _handle_google_api_error_payload(data)
+        if reconnect_payload:
+            return jsonify(reconnect_payload), reconnect_status
         _persist_dashboard_refreshed_gsc_token(initial_token_json)
         status = 503 if isinstance(data, dict) and data.get("error") else 200
         return jsonify(data), status
     except Exception as exc:
+        if _is_google_reconnect_error(str(exc)):
+            _clear_active_google_connection()
+            return jsonify(_google_reconnect_response(str(exc))), 401
         return jsonify({"error": str(exc)}), 500
 
 
@@ -3324,6 +3460,16 @@ def index():
     background:var(--line-light);color:var(--muted);font-size:12px;
   }}
 
+  .google-reconnect-banner {{
+    display:none;align-items:center;justify-content:space-between;gap:14px;
+    background:var(--bad-bg);border:1px solid #fecaca;color:var(--bad);
+    border-radius:var(--radius);padding:13px 16px;margin-bottom:16px;
+    box-shadow:var(--shadow-sm);
+  }}
+  .google-reconnect-banner strong {{display:block;color:var(--bad);font-size:13px;margin-bottom:2px}}
+  .google-reconnect-banner span {{display:block;color:#7f1d1d;font-size:12px;line-height:1.45}}
+  .google-reconnect-banner .btn {{background:var(--brand);color:#fff;border-color:var(--brand);white-space:nowrap}}
+
   .chart-panel {{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:18px 20px;margin-bottom:16px}}
   .chart-wrap  {{position:relative;height:270px;width:100%;min-width:0;overflow:hidden}}
   .chart-error {{display:none;margin-top:10px;background:var(--bad-bg);border:1px solid #fecaca;color:var(--bad);border-radius:var(--radius-sm);padding:10px 12px;font-size:12px;font-weight:600}}
@@ -3375,6 +3521,7 @@ def index():
   }}
   @media(max-width:520px){{
     .kpi-grid {{grid-template-columns:1fr}}
+    .google-reconnect-banner {{align-items:flex-start;flex-direction:column}}
     .revenue-summary {{padding:15px 14px}}
     .revenue-summary-head {{align-items:flex-start}}
     .revenue-kpi-grid {{grid-template-columns:1fr}}
@@ -3429,6 +3576,14 @@ def index():
     </div>
     <button class="btn btn-ghost btn-sm" id="dash-refresh" title="Forçar atualização" style="padding:5px 10px">↻</button>
   </div>
+</div>
+
+<div class="google-reconnect-banner" id="google-reconnect-banner">
+  <div>
+    <strong>Reconecte sua conta Google</strong>
+    <span id="google-reconnect-message">O Google rejeitou o token salvo deste site.</span>
+  </div>
+  <a href="/settings#gsc" class="btn btn-sm" id="google-reconnect-link">Reconectar Google</a>
 </div>
 
 <div class="kpi-grid">
@@ -3803,6 +3958,21 @@ def index():
     error.textContent = msg;
   }}
 
+  function showGoogleReconnect(data, fallback) {{
+    const banner = document.getElementById('google-reconnect-banner');
+    if (!banner) return;
+    const message = (data && (data.error || data.ai_error)) || fallback || 'A conexÃ£o com o Google expirou.';
+    const detail = data && data.detail ? ' Detalhe: ' + data.detail : '';
+    document.getElementById('google-reconnect-message').textContent = message + detail;
+    document.getElementById('google-reconnect-link').href = (data && data.reconnect_url) || '/settings#gsc';
+    banner.style.display = 'flex';
+  }}
+
+  function hideGoogleReconnect() {{
+    const banner = document.getElementById('google-reconnect-banner');
+    if (banner) banner.style.display = 'none';
+  }}
+
   function buildChart(series) {{
     const labels = series.map(r => fmtDate(r.date));
     const clicks = series.map(r => r.clicks);
@@ -3959,6 +4129,9 @@ def index():
       'Tempo esgotado ao buscar o faturamento no Google Analytics 4.'
     );
     if (data.error) {{
+      if (data.google_reconnect_required) {{
+        showGoogleReconnect(data, data.error);
+      }}
       const message = data.setup_required
         ? 'Selecione uma propriedade GA4 nas Configurações para exibir o faturamento.'
         : 'Faturamento indisponível: ' + data.error;
@@ -3972,6 +4145,9 @@ def index():
     skAI();
     try {{
       const d = await fetchJsonWithTimeout('/dashboard/ai'+rangeQuery(range, force), 18000);
+      if (d.google_reconnect_required) {{
+        showGoogleReconnect(d, d.ai_error || d.error);
+      }}
       renderAIRevenue(d.revenue_highlights || null);
       renderAI(d.ai_summary || (d.ai_error ? '⚠ '+d.ai_error : (d.error ? '⚠ '+d.error : '')));
     }} catch(e) {{
@@ -4002,6 +4178,7 @@ def index():
   async function load(range, force) {{
     _activeRange = range;
     updateDateControls();
+    hideGoogleReconnect();
     setLoading(true);
     skAI();
     const revenuePromise = loadRevenue(range, force)
@@ -4014,6 +4191,9 @@ def index():
     let gscOk = false;
     try {{
       const data = await fetchJsonWithTimeout('/dashboard/data'+rangeQuery(range, force), 22000);
+      if (data.google_reconnect_required) {{
+        showGoogleReconnect(data, data.error);
+      }}
       if (data.error) {{
         showError('GSC indisponível: ' + data.error);
         return;
@@ -10538,7 +10718,7 @@ def settings():
       </div>
 
       <hr style="border:none;border-top:1px solid var(--line);margin:0 0 18px">
-      <h2 style="margin-bottom:14px">Google Search Console</h2>
+      <h2 id="gsc" style="margin-bottom:14px;scroll-margin-top:24px">Google Search Console</h2>
       {gsc_panel}
       {ga4_panel}
 

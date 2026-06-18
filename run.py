@@ -301,32 +301,44 @@ def run_broken_links(urls: list = None, max_pages: int = 200) -> dict:
         pages_data = {}
         incoming   = {}
 
-        from collectors.crawler import get_page, extract_links, normalize_url
-        import time
+        from collectors.crawler import extract_canonical, extract_links, get_page, normalize_url, shared_session
 
-        for url in full_urls:
-            status, soup, headers, final_url = get_page(url)
-            links = extract_links(soup, url) if soup else []
-            pages_data[url] = {"status": status, "final_url": final_url,
-                               "redirect": url != final_url, "links": links}
+        with shared_session(cache=True):
+            for url in full_urls:
+                status, soup, headers, final_url = get_page(url)
+                links = extract_links(soup, url) if soup else []
+                pages_data[url] = {
+                    "status": status,
+                    "final_url": final_url,
+                    "redirect": url != final_url,
+                    "links": links,
+                    "canonical": extract_canonical(soup, url),
+                    "html_size_bytes": int(headers.get("_content_size_bytes", 0) or 0),
+                }
 
-            for lk in links:
-                if lk["is_internal"]:
-                    target = normalize_url(lk["url"])
-                    incoming.setdefault(target, []).append(
-                        {"source": url, "anchor": lk["anchor"], "nofollow": lk["nofollow"]})
+                for lk in links:
+                    if lk["is_internal"]:
+                        target = normalize_url(lk["url"])
+                        incoming.setdefault(target, []).append(
+                            {"source": url, "anchor": lk["anchor"], "nofollow": lk["nofollow"]})
 
-        # Check status of all outgoing links (deduplicated)
-        outgoing_targets = {normalize_url(lk["url"])
-                            for data in pages_data.values()
-                            for lk in data["links"]
-                            if lk["is_internal"]}
+            # Check status of all outgoing links (deduplicated)
+            outgoing_targets = {normalize_url(lk["url"])
+                                for data in pages_data.values()
+                                for lk in data["links"]
+                                if lk["is_internal"]}
 
-        for target in outgoing_targets:
-            if target not in pages_data:
-                status, _, _, final_url = get_page(target)
-                pages_data[target] = {"status": status, "final_url": final_url,
-                                      "redirect": target != final_url, "links": []}
+            for target in outgoing_targets:
+                if target not in pages_data:
+                    status, soup, headers, final_url = get_page(target)
+                    pages_data[target] = {
+                        "status": status,
+                        "final_url": final_url,
+                        "redirect": target != final_url,
+                        "links": [],
+                        "canonical": extract_canonical(soup, target),
+                        "html_size_bytes": int(headers.get("_content_size_bytes", 0) or 0),
+                    }
 
         crawl_data = {"pages": pages_data, "incoming_links": incoming}
 

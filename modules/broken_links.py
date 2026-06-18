@@ -1,6 +1,14 @@
 from collections import defaultdict
 from urllib.parse import urlparse
-from modules.crawler import get_page, is_internal, normalize_url, extract_links, should_skip
+from modules.crawler import (
+    extract_canonical,
+    extract_links,
+    get_page,
+    is_internal,
+    normalize_url,
+    shared_session,
+    should_skip,
+)
 from config import MAX_CRAWL_PAGES, get_priority_pages, get_site_url
 
 
@@ -40,6 +48,8 @@ def crawl(start_url: str = None, max_pages: int = MAX_CRAWL_PAGES) -> dict:
                 "final_url": final_url,
                 "redirect": normalize_url(url) != normalize_url(final_url),
                 "links": [],
+                "canonical": extract_canonical(soup, url),
+                "html_size_bytes": int(headers.get("_content_size_bytes", 0) or 0),
             }
 
             if soup:
@@ -56,12 +66,13 @@ def crawl(start_url: str = None, max_pages: int = MAX_CRAWL_PAGES) -> dict:
                         if target not in visited:
                             queue.append(target)
 
-    if ctx:
-        with ctx as progress:
-            task = progress.add_task("Rastreando...", total=max_pages)
+    with shared_session(cache=True):
+        if ctx:
+            with ctx as progress:
+                task = progress.add_task("Rastreando...", total=max_pages)
+                process()
+        else:
             process()
-    else:
-        process()
 
     return {"pages": visited, "incoming_links": dict(incoming)}
 

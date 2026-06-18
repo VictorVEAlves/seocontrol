@@ -59,8 +59,49 @@ def test_get_page_retries_remote_disconnect_with_browser_headers(monkeypatch):
     assert soup.get_text(strip=True) == "ok"
     assert final_url == "https://example.com/lacoste"
     assert headers["_fetch_attempts"] == 2
-    assert calls[0]["headers"]["Connection"] == "close"
+    assert calls[0]["headers"].get("Connection") != "close"
     assert calls[0]["headers"]["Referer"] == "https://example.com/"
+
+
+def test_shared_session_reuses_session_and_fetch_cache(monkeypatch):
+    calls = []
+    sessions = []
+
+    class FakeResponse:
+        status_code = 200
+        ok = True
+        url = "https://example.com/lacoste"
+        headers = {"content-type": "text/html"}
+        content = b"<html><body>ok</body></html>"
+        text = "<html><body>ok</body></html>"
+        history = []
+
+    class FakeSession:
+        def __init__(self):
+            self.headers = {}
+            self.closed = False
+            sessions.append(self)
+
+        def get(self, url, timeout, allow_redirects):
+            calls.append({"url": url, "headers": dict(self.headers)})
+            return FakeResponse()
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(crawler_module, "CRAWL_DELAY", 0)
+    monkeypatch.setattr(crawler_module, "CRAWL_RETRIES", 0)
+    monkeypatch.setattr(crawler_module.requests, "Session", FakeSession)
+
+    with crawler_module.shared_session(cache=True):
+        first = crawler_module.get_page("https://example.com/lacoste")
+        second = crawler_module.get_page("https://example.com/lacoste")
+
+    assert len(sessions) == 1
+    assert len(calls) == 1
+    assert first[0] == 200
+    assert second[1].get_text(strip=True) == "ok"
+    assert sessions[0].closed is True
 
 
 def test_crawler_imports_when_retry_setting_is_missing(monkeypatch):

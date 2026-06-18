@@ -5,16 +5,17 @@ from urllib.parse import urljoin, urlparse
 import requests
 
 from config import REQUEST_TIMEOUT, USER_AGENT, get_priority_pages, get_site_url
-from modules.crawler import SKIP_EXTENSIONS, get_page, normalize_url
+from modules.crawler import SKIP_EXTENSIONS, get_page, normalize_url, shared_session
 
 
 HEADERS = {"User-Agent": USER_AGENT}
 
 
-def fetch_robots() -> dict:
+def fetch_robots(session: requests.Session | None = None) -> dict:
     url = urljoin(get_site_url(), "/robots.txt")
+    http = session or requests
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        resp = http.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
         text = resp.text if resp.ok else ""
     except requests.RequestException as exc:
         return {"url": url, "status": 0, "text": "", "sitemaps": [], "disallows": [], "error": str(exc)}
@@ -67,25 +68,30 @@ def _parse_sitemap_xml(xml_text: str) -> tuple[list, list]:
 
 
 def fetch_sitemap_urls(sitemap_urls: list | None = None, max_sitemaps: int = 20) -> dict:
-    robots = fetch_robots()
+    session = requests.Session()
+    session.headers.update(HEADERS)
+    robots = fetch_robots(session=session)
     queue = list(sitemap_urls or robots.get("sitemaps") or [urljoin(get_site_url(), "/sitemap.xml")])
     seen = set()
     urls = set()
     errors = []
 
-    while queue and len(seen) < max_sitemaps:
-        sitemap_url = queue.pop(0)
-        if sitemap_url in seen:
-            continue
-        seen.add(sitemap_url)
-        try:
-            resp = requests.get(sitemap_url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-            resp.raise_for_status()
-            parsed_urls, indexes = _parse_sitemap_xml(resp.text)
-            urls.update(parsed_urls)
-            queue.extend([idx for idx in indexes if idx not in seen])
-        except Exception as exc:
-            errors.append({"url": sitemap_url, "error": str(exc)})
+    try:
+        while queue and len(seen) < max_sitemaps:
+            sitemap_url = queue.pop(0)
+            if sitemap_url in seen:
+                continue
+            seen.add(sitemap_url)
+            try:
+                resp = session.get(sitemap_url, timeout=REQUEST_TIMEOUT)
+                resp.raise_for_status()
+                parsed_urls, indexes = _parse_sitemap_xml(resp.text)
+                urls.update(parsed_urls)
+                queue.extend([idx for idx in indexes if idx not in seen])
+            except Exception as exc:
+                errors.append({"url": sitemap_url, "error": str(exc)})
+    finally:
+        session.close()
 
     return {"sitemaps_checked": list(seen), "urls": sorted(urls), "errors": errors, "robots": robots}
 
@@ -121,18 +127,23 @@ def analyze(crawl_data: dict | None = None, priority_pages: list | None = None) 
             blocked_priority.append(page)
 
     pages = (crawl_data or {}).get("pages", {})
-    for url, data in pages.items():
-        status, soup, _, final_url = get_page(url)
-        if not soup:
-            continue
-        canonical = soup.find("link", rel="canonical")
-        canonical_url = normalize_url(canonical.get("href"), url) if canonical and canonical.get("href") else ""
-        if canonical_url and canonical_url != normalize_url(final_url):
-            canonical_issues.append({
-                "url": url.replace(site_url, ""),
-                "canonical": canonical_url.replace(site_url, ""),
-                "final_url": normalize_url(final_url).replace(site_url, ""),
-            })
+    with shared_session(cache=True):
+        for url, data in pages.items():
+            final_url = str(data.get("final_url") or url)
+            if "canonical" in data:
+                canonical_url = str(data.get("canonical") or "")
+            else:
+                status, soup, _, final_url = get_page(url)
+                if not soup:
+                    continue
+                canonical = soup.find("link", rel="canonical")
+                canonical_url = normalize_url(canonical.get("href"), url) if canonical and canonical.get("href") else ""
+            if canonical_url and canonical_url != normalize_url(final_url):
+                canonical_issues.append({
+                    "url": url.replace(site_url, ""),
+                    "canonical": canonical_url.replace(site_url, ""),
+                    "final_url": normalize_url(final_url).replace(site_url, ""),
+                })
 
     issues = []
     issues.extend({"type": "missing_from_sitemap", "url": url} for url in missing_priority)
