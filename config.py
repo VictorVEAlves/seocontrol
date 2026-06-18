@@ -521,6 +521,7 @@ MAX_CRAWL_PAGES = 1000
 CRAWL_DELAY = float(os.environ.get("SEO_CRAWL_DELAY", "1.0"))  # segundos entre requisicoes
 REQUEST_TIMEOUT = float(os.environ.get("SEO_REQUEST_TIMEOUT", "15"))
 CRAWL_RETRIES = int(os.environ.get("SEO_CRAWL_RETRIES", "2"))
+ONPAGE_WORKERS = int(os.environ.get("SEO_ONPAGE_WORKERS", "4"))
 USER_AGENT = os.environ.get(
     "SEO_CRAWLER_USER_AGENT",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "

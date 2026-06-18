@@ -6,6 +6,7 @@ from modules.crawler import (
     normalize_url,
     shared_session,
     should_skip,
+    worker_session_pool,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "normalize_url",
     "shared_session",
     "should_skip",
+    "worker_session_pool",
 ]

@@ -1,5 +1,6 @@
 import time
 import requests
+import threading
 from bs4 import BeautifulSoup
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -61,6 +62,7 @@ SKIP_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp", ".avif",
 
 _ACTIVE_SESSION: ContextVar[requests.Session | None] = ContextVar("crawler_active_session", default=None)
 _ACTIVE_FETCH_CACHE: ContextVar[dict | None] = ContextVar("crawler_active_fetch_cache", default=None)
+_THREAD_LOCAL = threading.local()
 
 
 @contextmanager
@@ -81,6 +83,30 @@ def shared_session(cache: bool = False):
             pass
 
 
+@contextmanager
+def worker_session_pool(cache: bool = False):
+    """Create one reusable HTTP session per worker thread."""
+    sessions: list[requests.Session] = []
+    lock = threading.Lock()
+
+    def initializer():
+        session = requests.Session()
+        session.headers.update(BASE_HEADERS)
+        _THREAD_LOCAL.session = session
+        _THREAD_LOCAL.fetch_cache = {} if cache else None
+        with lock:
+            sessions.append(session)
+
+    try:
+        yield initializer
+    finally:
+        for session in sessions:
+            try:
+                session.close()
+            except Exception:
+                pass
+
+
 def _request_headers(url: str) -> dict:
     parsed = urlparse(url)
     origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else get_site_url()
@@ -99,10 +125,12 @@ def get_page(url: str, session: requests.Session | None = None) -> tuple:
     Returns (0, None, {}, url) on connection error.
     """
     cache = _ACTIVE_FETCH_CACHE.get()
+    if cache is None:
+        cache = getattr(_THREAD_LOCAL, "fetch_cache", None)
     if cache is not None and url in cache:
         return cache[url]
 
-    active_session = session or _ACTIVE_SESSION.get()
+    active_session = session or _ACTIVE_SESSION.get() or getattr(_THREAD_LOCAL, "session", None)
     owns_session = active_session is None
     if active_session is None:
         active_session = requests.Session()

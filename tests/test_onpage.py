@@ -1,4 +1,6 @@
 from bs4 import BeautifulSoup
+import threading
+import time
 
 from analyzers import onpage
 
@@ -187,3 +189,46 @@ def test_audit_pages_reports_progress_without_orphan_inference(monkeypatch):
         for result in results
         for warning in result["warnings"]
     )
+
+
+def test_audit_pages_uses_limited_parallel_workers(monkeypatch):
+    seen_threads = set()
+
+    def fake_audit_page(url, collect_internal_links=False):
+        seen_threads.add(threading.get_ident())
+        time.sleep(0.02)
+        return {
+            "url": url,
+            "title": url,
+            "description": url,
+            "issues": [],
+            "warnings": [],
+            "score": 100,
+            "grade": "A",
+            "outgoing_internal_links": [],
+        }
+
+    monkeypatch.setenv("SEO_ONPAGE_WORKERS", "3")
+    monkeypatch.setattr("modules.onpage.audit_page", fake_audit_page)
+    monkeypatch.setattr("modules.onpage._get_site_url", lambda: "https://example.com")
+    updates = []
+
+    results = onpage.audit_pages(
+        ["/a", "/b", "/c", "/d"],
+        verbose=False,
+        progress_callback=lambda done, total, url: updates.append((done, total, url)),
+    )
+
+    assert len(seen_threads) > 1
+    assert [row["url"] for row in results] == [
+        "https://example.com/a",
+        "https://example.com/b",
+        "https://example.com/c",
+        "https://example.com/d",
+    ]
+    assert updates == [
+        (1, 4, "https://example.com/a"),
+        (2, 4, "https://example.com/b"),
+        (3, 4, "https://example.com/c"),
+        (4, 4, "https://example.com/d"),
+    ]

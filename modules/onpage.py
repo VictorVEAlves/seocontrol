@@ -1,6 +1,9 @@
 import json
-from modules.crawler import get_page, extract_links, is_internal, shared_session
-from config import get_site_url as _get_site_url
+import os
+from concurrent.futures import ThreadPoolExecutor
+
+from modules.crawler import get_page, extract_links, is_internal, shared_session, worker_session_pool
+from config import ONPAGE_WORKERS as _CONFIG_ONPAGE_WORKERS, get_site_url as _get_site_url
 
 HTML_SIZE_WARN_KB = 2560
 
@@ -8,6 +11,15 @@ TITLE_MIN = 30
 TITLE_MAX = 70
 DESC_MIN = 100
 DESC_MAX = 165
+ONPAGE_WORKERS = _CONFIG_ONPAGE_WORKERS
+
+
+def _onpage_worker_count(total: int) -> int:
+    try:
+        configured = int(os.environ.get("SEO_ONPAGE_WORKERS", ONPAGE_WORKERS))
+    except (TypeError, ValueError):
+        configured = int(ONPAGE_WORKERS or 1)
+    return max(1, min(configured, max(1, total), 16))
 
 
 def _is_tracking_pixel(img) -> bool:
@@ -233,8 +245,103 @@ def _rescore(result: dict) -> None:
     )
 
 
+def _collect_page_audits(full_urls: list, verbose: bool, progress_callback,
+                         check_internal_links: bool) -> list:
+    results = []
+    total = len(full_urls)
+    workers = _onpage_worker_count(total)
+
+    if workers <= 1:
+        try:
+            from rich.progress import track as _track
+            _iter = _track(full_urls, description="Auditando paginas...") if verbose else full_urls
+        except ImportError:
+            _iter = full_urls
+        with shared_session(cache=True):
+            for index, url in enumerate(_iter, start=1):
+                results.append(audit_page(url, collect_internal_links=check_internal_links))
+                if progress_callback:
+                    progress_callback(index, total, url)
+        return results
+
+    def _audit(url: str) -> dict:
+        return audit_page(url, collect_internal_links=check_internal_links)
+
+    with worker_session_pool(cache=True) as initializer:
+        with ThreadPoolExecutor(max_workers=workers, initializer=initializer) as executor:
+            mapped = executor.map(_audit, full_urls)
+            if verbose:
+                try:
+                    from rich.progress import track as _track
+                    mapped = _track(mapped, total=total, description="Auditando paginas...")
+                except ImportError:
+                    pass
+            for index, result in enumerate(mapped, start=1):
+                results.append(result)
+                if progress_callback:
+                    progress_callback(index, total, result.get("url") or full_urls[index - 1])
+    return results
+
+
+def _postprocess_page_audits(results: list, check_internal_links: bool) -> list:
+    title_map: dict = {}
+    for row in results:
+        title = row.get("title", "").strip().lower()
+        if title:
+            title_map.setdefault(title, []).append(row["url"])
+    for row in results:
+        title = row.get("title", "").strip().lower()
+        dupes = title_map.get(title, [])
+        if title and len(dupes) > 1:
+            others = [url for url in dupes if url != row["url"]]
+            row["warnings"].append(
+                f"Meta title duplicado em {len(others)} outra(s) pagina(s): {others[0]}"
+            )
+
+    desc_map: dict = {}
+    for row in results:
+        description = row.get("description", "").strip().lower()
+        if description:
+            desc_map.setdefault(description, []).append(row["url"])
+    for row in results:
+        description = row.get("description", "").strip().lower()
+        dupes = desc_map.get(description, [])
+        if description and len(dupes) > 1:
+            others = [url for url in dupes if url != row["url"]]
+            row["warnings"].append(
+                f"Meta description duplicada em {len(others)} outra(s) pagina(s): {others[0]}"
+            )
+
+    if check_internal_links:
+        incoming: dict = {}
+        audited_urls = {row["url"] for row in results}
+        for row in results:
+            for link in row.get("outgoing_internal_links", []):
+                if link in audited_urls:
+                    incoming[link] = incoming.get(link, 0) + 1
+        for row in results:
+            count = incoming.get(row["url"], 0)
+            if count < 2:
+                row["warnings"].append(
+                    f"Pagina com apenas {count} link(s) interno(s) recebido(s) - risco de pagina orfa"
+                )
+
+    for row in results:
+        _rescore(row)
+    return results
+
+
+def _audit_pages_parallel(urls: list, verbose: bool = True, progress_callback=None,
+                          check_internal_links: bool = False) -> list:
+    full_urls = [url if url.startswith("http") else _get_site_url() + url for url in urls]
+    results = _collect_page_audits(full_urls, verbose, progress_callback, check_internal_links)
+    return _postprocess_page_audits(results, check_internal_links)
+
+
 def audit_pages(urls: list, verbose: bool = True, progress_callback=None,
                 check_internal_links: bool = False) -> list:
+    return _audit_pages_parallel(urls, verbose, progress_callback, check_internal_links)
+
     full_urls = [u if u.startswith("http") else _get_site_url() + u for u in urls]
     try:
         from rich.progress import track as _track
