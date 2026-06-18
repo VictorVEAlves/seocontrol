@@ -3,6 +3,11 @@ import os
 import app as dashboard
 
 
+def test_gsc_property_normalization_keeps_domain_property_exact():
+    assert dashboard.normalize_gsc_property("sc-domain:example.com/") == "sc-domain:example.com"
+    assert dashboard.normalize_gsc_property("https://www.example.com") == "https://www.example.com/"
+
+
 class _Result:
     def __init__(self, data=None):
         self.data = data
@@ -114,7 +119,7 @@ def test_saving_site_form_preserves_gsc_auth_and_private_settings(monkeypatch):
         })
 
     settings = fake.db["upserts"][-1]["settings"]
-    assert settings["gsc_property"] == "sc-domain:example.com/"
+    assert settings["gsc_property"] == "sc-domain:example.com"
     assert settings["business_context"] == "Contexto atualizado"
     assert settings["gsc_token_json"] == '{"token":"abc"}'
     assert settings["available_gsc_sites"] == ["https://example.com/", "sc-domain:example.com"]
@@ -143,3 +148,43 @@ def test_saving_site_config_can_still_clear_gsc_token_explicitly(monkeypatch):
     settings = fake.db["upserts"][-1]["settings"]
     assert settings["gsc_token_json"] is None
     assert settings["available_gsc_sites"] == ["https://example.com/", "sc-domain:example.com"]
+
+
+def test_settings_selects_sc_domain_property_without_trailing_slash(monkeypatch):
+    cfg = {
+        "site_id": "site-1",
+        "user_id": "user-1",
+        "site_url": "https://example.com",
+        "site_name": "Example",
+        "gsc_property": "sc-domain:example.com/",
+        "gsc_token_json": '{"token":"abc"}',
+        "available_gsc_sites": [
+            "sc-domain:old.example.com",
+            "sc-domain:example.com",
+            "https://www.example.com/",
+        ],
+        "available_ga4_properties": [],
+        "gsc_account_email": "user@example.com",
+    }
+
+    monkeypatch.setattr(dashboard, "_is_authenticated", lambda: True)
+    monkeypatch.setattr(dashboard, "_current_site_id", lambda: "site-1")
+    monkeypatch.setattr(dashboard, "_current_user_id", lambda: "user-1")
+    monkeypatch.setattr(dashboard, "_current_user_email", lambda: "user@example.com")
+    monkeypatch.setattr(dashboard, "_current_user_name", lambda: "User")
+    monkeypatch.setattr(dashboard, "_load_user_sites", lambda *_args, **_kwargs: [{
+        "site_id": "site-1",
+        "site_url": "https://example.com",
+        "site_name": "Example",
+    }])
+    monkeypatch.setattr(dashboard, "_load_active_site_config", lambda: dict(cfg))
+    monkeypatch.setattr(dashboard, "_site_has_gsc_token", lambda *_args, **_kwargs: True)
+
+    with dashboard.app.test_request_context("/settings"):
+        html = dashboard.settings()
+
+    assert '<option value="sc-domain:example.com" selected>' in html
+    assert 'value="sc-domain:example.com/" selected' not in html
+    assert 'id="site-url-input"' in html
+    assert 'id="gsc-property-input"' in html
+    assert "syncSiteUrlWithGscProperty" in html

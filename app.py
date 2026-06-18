@@ -23,7 +23,7 @@ from config import (disable_broken_local_proxy, BASE_DIR,
                     get_site_url, get_gsc_property, get_ga4_property, get_site_name, save_site_config,
                     set_runtime_site_config, clear_runtime_site_config,
                     get_gsc_credentials_file, get_gsc_token_file, get_gsc_token_json,
-                    get_runtime_dir)
+                    get_runtime_dir, normalize_gsc_property)
 
 load_dotenv()
 disable_broken_local_proxy()
@@ -409,9 +409,7 @@ def _save_user_site_config(config: dict) -> str:
     settings.pop("_new_site", None)
     settings["site_url"] = site_url
     settings["site_name"] = site_name
-    gsc_property = str(settings.get("gsc_property") or "").strip()
-    if gsc_property and not gsc_property.endswith("/"):
-        gsc_property += "/"
+    gsc_property = normalize_gsc_property(settings.get("gsc_property") or "")
     settings["gsc_property"] = gsc_property or ((site_url + "/") if site_url else "")
     settings["ga4_property"] = _normalize_ga4_property(settings.get("ga4_property") or "")
     settings.update(_user_site_gsc_paths(uid, str(site_id)))
@@ -10306,8 +10304,7 @@ def settings():
 
             if site_url and not site_url.startswith("http"):
                 site_url = "https://" + site_url
-            if gsc_property and not gsc_property.endswith("/"):
-                gsc_property += "/"
+            gsc_property = normalize_gsc_property(gsc_property)
             if gsc_property in ("/", ""):
                 gsc_property = None
 
@@ -10445,7 +10442,7 @@ def settings():
     is_new_site      = request.args.get("new_site") == "1"
     cfg              = {} if is_new_site else (_load_active_site_config() if _is_authenticated() else _load_site_config())
     current_url      = cfg.get("site_url") or ("" if _is_authenticated() else get_site_url())
-    current_prop     = cfg.get("gsc_property") or ("" if _is_authenticated() else get_gsc_property())
+    current_prop     = normalize_gsc_property(cfg.get("gsc_property") or ("" if _is_authenticated() else get_gsc_property()))
     _gsc_cred_file, gsc_token_file = (
         (get_runtime_dir() / "gsc" / "_new_site_credentials.json", get_runtime_dir() / "gsc" / "_new_site_token.json")
         if is_new_site else _active_gsc_files()
@@ -10523,18 +10520,19 @@ def settings():
         )
         # Property selector
         if available_sites:
-            opts = "".join(
-                f'<option value="{esc(s)}" {"selected" if s == current_prop else ""}>{esc(s)}</option>'
-                for s in available_sites
-            )
+            opts = ""
+            for raw_site in available_sites:
+                site_prop = normalize_gsc_property(raw_site)
+                selected = "selected" if site_prop == current_prop else ""
+                opts += f'<option value="{esc(site_prop)}" {selected}>{esc(site_prop)}</option>'
             prop_input = (
-                f'<select name="gsc_property" style="width:100%;padding:9px 12px;border:1px solid var(--line);'
+                f'<select id="gsc-property-input" name="gsc_property" style="width:100%;padding:9px 12px;border:1px solid var(--line);'
                 f'border-radius:6px;font-size:14px;color:var(--ink);background:var(--panel)">'
                 f'{opts}</select>'
             )
         else:
             prop_input = (
-                f'<input name="gsc_property" type="text" value="{esc(current_prop)}" '
+                f'<input id="gsc-property-input" name="gsc_property" type="text" value="{esc(current_prop)}" '
                 f'placeholder="https://www.seusite.com.br/" '
                 f'style="width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:6px;font-size:14px;color:var(--ink)"/>'
             )
@@ -10760,7 +10758,7 @@ def settings():
         <div>
           <label style="display:block;font-size:12px;font-weight:700;color:var(--muted);
                          margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">URL do Site</label>
-          <input name="site_url" type="url" value="{esc(current_url)}"
+          <input id="site-url-input" name="site_url" type="url" value="{esc(current_url)}"
             placeholder="https://www.seusite.com.br"
             style="width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:6px;font-size:14px;color:var(--ink)"/>
           <p style="font-size:11px;color:var(--muted);margin-top:4px">URL raiz do site a auditar, sem barra no final.</p>
@@ -10840,6 +10838,46 @@ def settings():
 
 </div>
 """
+    body += """
+<script>
+(function syncSiteUrlWithGscProperty(){
+  const siteInput = document.getElementById('site-url-input');
+  const gscInput = document.getElementById('gsc-property-input');
+  if (!siteInput || !gscInput) return;
+  const initialSiteUrl = siteInput.value;
+  let siteTouched = false;
+
+  function normalizeSiteUrl(value) {
+    value = String(value || '').trim().replace(/\/+$/, '');
+    if (!value) return '';
+    if (!/^https?:\/\//i.test(value)) value = 'https://' + value;
+    return value;
+  }
+
+  function urlFromGscProperty(value) {
+    value = String(value || '').trim();
+    if (!value) return '';
+    if (value.toLowerCase().startsWith('sc-domain:')) {
+      return normalizeSiteUrl(value.slice('sc-domain:'.length));
+    }
+    try {
+      const parsed = new URL(value);
+      return parsed.origin;
+    } catch (_err) {
+      return '';
+    }
+  }
+
+  siteInput.addEventListener('input', function(){ siteTouched = true; });
+  gscInput.addEventListener('change', function(){
+    const inferred = urlFromGscProperty(gscInput.value);
+    if (!inferred) return;
+    if (!siteInput.value || !siteTouched || siteInput.value === initialSiteUrl) {
+      siteInput.value = inferred;
+    }
+  });
+})();
+</script>"""
     return page_shell("Configurações", body)
 
 

@@ -237,8 +237,18 @@ def get_site_url() -> str:
     return url.rstrip("/")
 
 
+def normalize_gsc_property(value: str) -> str:
+    """Return a GSC property in the exact format expected by the API."""
+    prop = str(value or "").strip()
+    if not prop:
+        return ""
+    if prop.lower().startswith("sc-domain:"):
+        return prop.rstrip("/")
+    return prop if prop.endswith("/") else prop + "/"
+
+
 def get_gsc_property() -> str:
-    """Return the GSC property URL (always ends with '/')."""
+    """Return the configured GSC property."""
     cfg = _load_site_config()
     if _using_runtime_site_config():
         site_url = get_site_url()
@@ -249,7 +259,7 @@ def get_gsc_property() -> str:
                 or ((get_site_url() + "/") if get_site_url() else ""))
     if not prop:
         return ""
-    return prop if prop.endswith("/") else prop + "/"
+    return normalize_gsc_property(prop)
 
 
 def get_ga4_property() -> str:
